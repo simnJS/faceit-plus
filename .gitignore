@@ -26,6 +26,12 @@ clipboard-*.png
 *.sln
 *.sw?
 
+# Secrets — ne jamais committer
+.env
+.env.local
+*.env
+!.env.example
+
 # Crawler
 crawler/*.db
 crawler/*.db-*

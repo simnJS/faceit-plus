@@ -12,6 +12,8 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "crawl": "node crawler/crawl.mjs",
+    "crawl:export": "node crawler/export.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

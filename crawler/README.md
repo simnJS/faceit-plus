@@ -16,13 +16,17 @@ l'endpoint public de veto — sans clé, mais soumise au même limiteur de débi
 
 ## Utilisation
 
-```bash
-# Windows PowerShell
-$env:FACEIT_API_KEY="votre_clé"
-node crawler/crawl.mjs --seed simnJS_ --max-matches 5000
+Copier `.env.example` en `.env` à la racine et y renseigner la clé, puis :
 
-# bash
-FACEIT_API_KEY=votre_clé node crawler/crawl.mjs --seed simnJS_ --max-matches 5000
+```bash
+npm run crawl
+```
+
+Le `.env` est chargé automatiquement (`FACEIT_API_KEY` et `FACEIT_SEED`) et il est
+exclu du dépôt. Les options s'ajoutent après `--` :
+
+```bash
+npm run crawl -- --max-matches 50000 --rps 3
 ```
 
 Le crawl fonctionne en **boule de neige** : il part de la graine, récupère ses

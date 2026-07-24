@@ -10,6 +10,13 @@ import { parseArgs } from 'node:util';
 import { FaceitClient, RateLimiter } from './lib/faceit.mjs';
 import { CrawlDb } from './lib/db.mjs';
 
+// Charge .env s'il existe (clé d'API, graine par défaut). Sans dépendance.
+try {
+  process.loadEnvFile();
+} catch {
+  // pas de .env : on se rabat sur les variables d'environnement du shell
+}
+
 const { values } = parseArgs({
   options: {
     seed: { type: 'string', multiple: true, default: [] },
@@ -42,9 +49,12 @@ Clé d'API gratuite : https://developers.faceit.com → application → API key 
 
 const apiKey = process.env.FACEIT_API_KEY;
 if (!apiKey) {
-  console.error('FACEIT_API_KEY manquante. Voir --help.');
+  console.error('FACEIT_API_KEY manquante : renseigne-la dans .env (voir .env.example).');
   process.exit(1);
 }
+
+// Graine : --seed prioritaire, sinon FACEIT_SEED du .env.
+const seeds = values.seed.length > 0 ? values.seed : [process.env.FACEIT_SEED].filter(Boolean);
 
 const maxMatches = Number(values['max-matches']);
 const maxDepth = Number(values['max-depth']);
@@ -112,7 +122,7 @@ function extractVeto(entities) {
 }
 
 // Amorçage
-for (const nickname of values.seed) {
+for (const nickname of seeds) {
   const player = await client.playerByNickname(nickname);
   if (!player?.player_id) {
     console.error(`Graine introuvable : ${nickname}`);
