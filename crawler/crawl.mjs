@@ -63,8 +63,11 @@ process.on('SIGINT', () => {
   stopping = true;
 });
 
-/** Transforme la réponse de l'API officielle en lignes prêtes pour la base. */
-function extractMatch(details) {
+/**
+ * Transforme la réponse de l'API officielle en lignes prêtes pour la base.
+ * `historyItem` complète les champs que le détail de match n'expose pas toujours.
+ */
+function extractMatch(details, historyItem = {}) {
   const factions = details?.teams ?? {};
   const players = [];
   for (const [faction, team] of Object.entries(factions)) {
@@ -86,9 +89,9 @@ function extractMatch(details) {
     match: {
       id: details.match_id,
       playedAt: (details.started_at ?? details.finished_at ?? 0) * 1000 || null,
-      region: details.region ?? null,
-      competition: details.competition_type ?? null,
-      gameMode: details.game_mode ?? null,
+      region: details.region ?? historyItem.region ?? null,
+      competition: details.competition_type ?? historyItem.competition_type ?? null,
+      gameMode: details.game_mode ?? historyItem.game_mode ?? null,
       bestOf: details.best_of ?? null,
       mapPicked: Array.isArray(picked) ? (picked[0] ?? null) : null,
       winner: details.results?.winner ?? null,
@@ -153,7 +156,7 @@ while (added < maxMatches && !stopping) {
 
     const details = await client.matchDetails(matchId);
     if (!details) continue;
-    const { match, players } = extractMatch(details);
+    const { match, players } = extractMatch(details, item);
     // Seuls les matchs avec veto nous intéressent pour le modèle.
     const veto = extractVeto(await client.matchVeto(matchId));
 
