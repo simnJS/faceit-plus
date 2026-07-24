@@ -1,0 +1,53 @@
+name: Release
+
+# Publie une release GitHub avec les archives Chrome et Firefox.
+# Utilisation : mettre à jour "version" dans package.json, puis
+#   git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Construire et publier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Vérifier que le tag correspond à package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Le tag ($TAG) ne correspond pas à la version de package.json ($PKG)." >&2
+            exit 1
+          fi
+
+      - name: Vérifier les types
+        run: npm run compile
+
+      - name: Générer les archives
+        run: |
+          npm run zip
+          npm run zip:firefox
+
+      - name: Créer la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" .output/*.zip \
+            --title "FACEIT+ $GITHUB_REF_NAME" \
+            --generate-notes
