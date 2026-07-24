@@ -25,3 +25,8 @@ clipboard-*.png
 *.njsproj
 *.sln
 *.sw?
+
+# Crawler
+crawler/*.db
+crawler/*.db-*
+crawler/*.jsonl
