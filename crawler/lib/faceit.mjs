@@ -17,8 +17,9 @@ const PUBLIC = 'https://www.faceit.com/api';
  * façon synchrone avant d'attendre, ce qui évite que plusieurs requêtes
  * concurrentes partent en même temps.
  *
- * Mesuré sur l'API officielle : ~30 req/s passent sans refus, au-delà les 429
- * apparaissent. La valeur par défaut du crawler reste en dessous.
+ * L'API officielle annonce sa limite dans ses en-têtes de réponse :
+ * « ratelimit-limit: 20, 20;w=1 », soit 20 requêtes par seconde glissante.
+ * Le crawler se règle juste en dessous ; les 429 restent gérés par reprise.
  */
 export class RateLimiter {
   /** @param {number} rps requêtes par seconde */

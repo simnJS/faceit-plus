@@ -45,25 +45,31 @@ Options utiles :
 | `--veto-rps <n>` | plafond sur l'endpoint de veto, 35 par défaut |
 | `--concurrency <n>` | matchs traités en parallèle, 10 par défaut |
 
-### Débits mesurés
+### Limite de débit
 
-| Parallélisme | API officielle | Endpoint de veto |
-| --- | --- | --- |
-| 2 | 16 req/s, aucun refus | 17 req/s, aucun refus |
-| 4 | 30 req/s, aucun refus | 32 req/s, aucun refus |
-| 8 | 52 req/s, **9 refus sur 40** | 60 req/s, aucun refus |
+L'API officielle **annonce sa limite dans ses en-têtes de réponse** :
 
-L'API officielle plafonne donc autour de **30 req/s**, l'endpoint de veto encaisse
-nettement plus. Les deux ont leur propre limiteur, réglé sous ces seuils.
+```
+ratelimit-limit: 20, 20;w=1
+ratelimit-remaining: 16
+```
 
-En pratique le crawler tient **~16 matchs/seconde**, soit près de 60 000 par
-heure. Monter `--rps` à 28 ne sert à rien : les 429 apparaissent et les pauses de
-reprise annulent exactement le gain (mesuré : 17 matchs/s pour 10 refus). Le
-plafond réel tient à la clé d'API, pas au client.
+Soit **20 requêtes par seconde**, sur une fenêtre glissante d'une seconde — pas
+un quota horaire. Le crawler se règle à 18 pour garder une marge. Monter au-delà
+ne sert à rien : les 429 arrivent et les pauses de reprise annulent le gain
+(mesuré : 17 matchs/s pour 10 refus à 28 req/s, contre 16,5 sans aucun refus).
 
-Ordres de grandeur : 100 000 matchs en moins de deux heures, un million en une
-nuit. Le débit baisse toutefois avec la profondeur, le crawler retombant de plus
-en plus souvent sur des matchs déjà connus.
+L'endpoint de veto est plus permissif (aucun refus observé jusqu'à 60 req/s),
+d'où deux limiteurs distincts.
+
+En pratique : **~16 matchs/seconde**, soit près de 60 000 par heure. Compter
+environ 3 h 30 pour 200 000 matchs. Le débit baisse toutefois avec la
+profondeur, le crawler retombant de plus en plus souvent sur des matchs déjà
+connus.
+
+Pour aller au-delà, la voie prévue est de **demander un relèvement de quota au
+support FACEIT** en expliquant l'usage — pas de multiplier les clés, ce qui
+reviendrait à contourner la limite annoncée.
 
 ## Suivi
 

@@ -23,7 +23,7 @@ const { values } = parseArgs({
     'max-matches': { type: 'string', default: '2000' },
     'max-depth': { type: 'string', default: '4' },
     'per-player': { type: 'string', default: '30' },
-    rps: { type: 'string', default: '22' },
+    rps: { type: 'string', default: '18' },
     'veto-rps': { type: 'string', default: '35' },
     concurrency: { type: 'string', default: '10' },
     db: { type: 'string', default: 'crawler/faceit.db' },
@@ -41,11 +41,12 @@ Crawler FACEIT — constitue une base de vetos pour entraîner un modèle.
   --max-matches <n>    nombre de matchs à ajouter avant de s'arrêter (défaut 2000)
   --max-depth <n>      profondeur maximale depuis les graines (défaut 4)
   --per-player <n>     matchs récupérés par joueur (défaut 30, max 100)
-  --rps <n>            plafond de requêtes par seconde (défaut 20)
-  --concurrency <n>    matchs traités en parallèle (défaut 4)
+  --rps <n>            plafond sur l'API officielle (défaut 18)
+  --veto-rps <n>       plafond sur l'endpoint de veto (défaut 35)
+  --concurrency <n>    matchs traités en parallèle (défaut 10)
 
-  Mesures : l'API officielle accepte ~30 req/s, les 429 apparaissent au-delà.
-  Les valeurs par défaut restent sous ce seuil.
+  L'API annonce sa limite dans ses en-têtes : « ratelimit-limit: 20, 20;w=1 »,
+  soit 20 requêtes par seconde. La valeur par défaut reste juste en dessous.
   --db <fichier>       base SQLite (défaut crawler/faceit.db)
 
 Clé d'API gratuite : https://developers.faceit.com → application → API key (server side).
