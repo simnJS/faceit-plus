@@ -14,7 +14,7 @@ import {
   type MapStat,
   type PoolMap,
 } from '@/utils/faceit-api';
-import { resolveCountries } from '@/utils/country-cache';
+import { resolveProfiles } from '@/utils/profile-cache';
 import { resolveMapStats } from '@/utils/map-stats-cache';
 import { resolvePremierRatings, type PremierInfo } from '@/utils/premier';
 import { createPremierBadge } from '@/utils/premier-badge';
@@ -29,13 +29,17 @@ import {
 } from '@/utils/veto-overlay';
 import { DEFAULT_SETTINGS, getSettings, watchSettings, type Settings } from '@/utils/settings';
 import { createTranslator, type Translator } from '@/utils/i18n';
-import { resolveRoles } from '@/utils/roles-cache';
+import { resolveAnalysis } from '@/utils/analysis-cache';
+import { computeSmurf, type SmurfResult } from '@/utils/smurf';
+import { predictFinalMap, recommendBan } from '@/utils/veto-advice';
 import { roleIconSvg, ROLE_GRADIENT, SCORED_ROLES, type RoleResult } from '@/utils/roles';
 import { runAutoAccept } from '@/utils/auto-accept';
 import { runAutoVeto, type VetoTileCandidate } from '@/utils/auto-veto';
 import { mountConfigPanel } from '@/utils/config-panel';
 
 const FLAG_MARKER = 'faceitPlusFlag';
+const SMURF_MARKER = 'faceitPlusSmurf';
+const SMURF_CLASS = 'faceitplus-smurf';
 const STATS_MARKER = 'faceitPlusStats';
 const STATS_CLASS = 'faceitplus-mapstats';
 
@@ -61,6 +65,8 @@ export default defineContentScript({
     let premierByNickname = new Map<string, PremierInfo>();
     let statsByNickname = new Map<string, MapStat[]>();
     let roleByNickname = new Map<string, RoleResult>();
+    let smurfByNickname = new Map<string, SmurfResult>();
+    let createdAtByNickname = new Map<string, number | null>();
     // Stats d'équipe par map (pour les overlays de veto)
     let teamStats: { f1: Map<string, TeamMapStat>; f2: Map<string, TeamMapStat> } | null = null;
     let banRateByMapId: Map<string, number> | null = null;
@@ -86,11 +92,16 @@ export default defineContentScript({
     // Retire nos injections pour que les toggles se ré-appliquent proprement.
     const resetInjected = () => {
       document
-        .querySelectorAll('.faceitplus-premier-badge, .faceitplus-mapstats, .faceitplus-veto-badge')
+        .querySelectorAll(
+          `.faceitplus-premier-badge, .${STATS_CLASS}, .${VETO_BADGE_CLASS}, .${SMURF_CLASS}`,
+        )
         .forEach((n) => n.remove());
       document.querySelectorAll<HTMLElement>('[data-faceit-plus-flag]').forEach((el) => {
         el.querySelector(':scope > img')?.remove();
         delete el.dataset[FLAG_MARKER];
+      });
+      document.querySelectorAll<HTMLElement>('[data-faceit-plus-smurf]').forEach((el) => {
+        delete el.dataset[SMURF_MARKER];
       });
       document.querySelectorAll<HTMLElement>('[data-faceit-plus-stats]').forEach((el) => {
         delete el.dataset[STATS_MARKER];
@@ -125,6 +136,15 @@ export default defineContentScript({
           if (country) {
             el.dataset[FLAG_MARKER] = country;
             el.appendChild(createFlagImg(country));
+          }
+        }
+
+        // Signalement de compte atypique, après le pseudo
+        if (settings.smurf && !el.dataset[SMURF_MARKER]) {
+          const smurf = smurfByNickname.get(nickname);
+          if (smurf) {
+            el.dataset[SMURF_MARKER] = '1';
+            el.appendChild(createSmurfBadge(smurf));
           }
         }
 
@@ -193,26 +213,70 @@ export default defineContentScript({
       return null;
     };
 
-    // Overlays sur les tuiles de la phase de veto : winrates d'équipe + ban rate.
+    // Overlays sur les tuiles de veto : winrates d'équipe, ban rate, et conseils.
     const applyVetoBadges = () => {
       if (!teamStats) return;
       const cards = findVetoCards();
       if (cards.length === 0) return;
       const nameToId = new Map(fullPool.map((m) => [normalizeMapName(m.name), m.id]));
 
+      // Notre camp / camp adverse selon la faction du joueur (par défaut faction1).
+      const mine = selfFaction === 'faction2' ? teamStats.f2 : teamStats.f1;
+      const theirs = selfFaction === 'faction2' ? teamStats.f1 : teamStats.f2;
+
+      // Conseil de ban + map probable, recalculés à chaque évolution du veto.
+      let adviceMapId: string | null = null;
+      let adviceDelta = 0;
+      let likelyByMapId: Map<string, number> | null = null;
+      const activePool = fullPool.filter((m) => activeIds.has(m.id));
+      if (settings.vetoAdvice && activePool.length > 1) {
+        const context = { pool: activePool, mine, theirs, banRates: banRateByMapId };
+        const reco = recommendBan(context);
+        if (reco) {
+          adviceMapId = reco.mapId;
+          adviceDelta = reco.advantage;
+        }
+        likelyByMapId = predictFinalMap(context);
+      }
+      // On ne signale que la map la plus probable, et seulement si elle se détache.
+      let likelyMapId: string | null = null;
+      if (likelyByMapId) {
+        let best: [string, number] | null = null;
+        for (const entry of likelyByMapId) if (!best || entry[1] > best[1]) best = entry;
+        if (best && best[1] >= 30 && best[0] !== adviceMapId) likelyMapId = best[0];
+      }
+
       for (const entry of cards) {
         const mapId = nameToId.get(normalizeMapName(entry.name));
         if (!mapId) continue;
 
         const banRate = banRateByMapId?.get(mapId) ?? null;
+        const banAdvice = mapId === adviceMapId ? { delta: adviceDelta } : null;
+        const likelyPercent = mapId === likelyMapId ? (likelyByMapId?.get(mapId) ?? null) : null;
+        // Signature : le badge est refait dès qu'une des valeurs affichées change.
+        const signature = [
+          mine.get(mapId)?.winrate ?? '',
+          theirs.get(mapId)?.winrate ?? '',
+          banRate ?? '',
+          banAdvice ? Math.round(banAdvice.delta) : '',
+          likelyPercent ?? '',
+        ].join('|');
+
         let badge = entry.card.querySelector<HTMLElement>(`:scope > .${VETO_BADGE_CLASS}`);
-        // (Re)pose le badge s'il manque, ou si le ban rate est arrivé entre-temps.
-        if (badge && banRate != null && !badge.dataset.hasBan) {
+        if (badge && badge.dataset.sig !== signature) {
           badge.remove();
           badge = null;
         }
         if (!badge) {
-          badge = createVetoBadge(teamStats.f1.get(mapId), teamStats.f2.get(mapId), banRate, t);
+          badge = createVetoBadge({
+            faction1: teamStats.f1.get(mapId),
+            faction2: teamStats.f2.get(mapId),
+            banRate,
+            banAdvice,
+            likelyPercent,
+            t,
+          });
+          badge.dataset.sig = signature;
           entry.card.appendChild(badge);
         }
         // Map bannie par FACEIT → badge estompé
@@ -222,12 +286,16 @@ export default defineContentScript({
       }
     };
 
-    // Retire tous les bandeaux et les réinjecte (après changement de pool / expand).
+    // Retire les bandeaux et signalements puis les réinjecte (nouveau pool, données
+    // arrivées après coup, dépliage…).
     const rerenderStrips = () => {
-      document.querySelectorAll(`.${STATS_CLASS}`).forEach((n) => n.remove());
+      document.querySelectorAll(`.${STATS_CLASS}, .${SMURF_CLASS}`).forEach((n) => n.remove());
       document
         .querySelectorAll<HTMLElement>(`[data-${STATS_MARKER.replace(/([A-Z])/g, '-$1').toLowerCase()}]`)
         .forEach((c) => delete c.dataset[STATS_MARKER]);
+      document.querySelectorAll<HTMLElement>('[data-faceit-plus-smurf]').forEach((el) => {
+        delete el.dataset[SMURF_MARKER];
+      });
       applyEnrichment();
     };
 
@@ -265,29 +333,37 @@ export default defineContentScript({
         const match = await fetchMatch(matchId);
         const roster = getMatchRoster(match);
         // Cœur (rapide, endpoints FACEIT) : drapeaux + K/D par map.
-        const [countries, statsByUid] = await Promise.all([
-          resolveCountries(roster.map((p) => p.nickname)),
+        const [profiles, statsByUid] = await Promise.all([
+          resolveProfiles(roster.map((p) => p.nickname)),
           resolveMapStats(roster.map((p) => p.id)),
         ]);
         if (currentRoomId !== matchId) return; // parti ailleurs entre-temps
 
         updatePool(getMapPool(match), getPickedMapIds(match));
-        countryByNickname = countries;
+        countryByNickname = new Map(
+          [...profiles.entries()]
+            .map(([nickname, profile]) => [nickname, profile.country] as const)
+            .filter((pair): pair is [string, string] => Boolean(pair[1])),
+        );
+        createdAtByNickname = new Map(
+          [...profiles.entries()].map(([nickname, profile]) => [nickname, profile.createdAt]),
+        );
         statsByNickname = new Map(
           roster
-            .map((p) => [p.nickname, statsByUid.get(p.id)] as const)
+            .map((p) => [p.nickname, statsByUid.get(p.id)?.maps] as const)
             .filter((pair): pair is [string, MapStat[]] => Boolean(pair[1])),
         );
 
         // Stats d'équipe par map pour les overlays de veto
+        const mapsByUid = new Map([...statsByUid].map(([uid, s]) => [uid, s.maps]));
         const factions = getFactionRosters(match);
         teamStats = {
-          f1: computeTeamMapStats(factions.faction1, statsByUid),
-          f2: computeTeamMapStats(factions.faction2, statsByUid),
+          f1: computeTeamMapStats(factions.faction1, mapsByUid),
+          f2: computeTeamMapStats(factions.faction2, mapsByUid),
         };
 
         console.log(
-          `[FACEIT+] cœur prêt (${countries.size} drapeaux, ${statsByNickname.size} rosters, ${fullPool.length} maps)`,
+          `[FACEIT+] cœur prêt (${countryByNickname.size} drapeaux, ${statsByNickname.size} rosters, ${fullPool.length} maps)`,
         );
         applyEnrichment();
 
@@ -315,18 +391,30 @@ export default defineContentScript({
           applyEnrichment();
         })();
 
-        // Rôles estimés (1 requête lifetime par joueur, cache 24 h) : découplé.
-        void resolveRoles(roster.map((p) => p.id))
-          .then((rolesByUid) => {
+        // Analyse lifetime (1 requête par joueur, cache 24 h) : rôle + signaux de
+        // compte suspect. Découplé pour ne pas retarder l'affichage principal.
+        void resolveAnalysis(roster.map((p) => p.id))
+          .then((analysisByUid) => {
             if (currentRoomId !== matchId) return;
-            roleByNickname = new Map(
-              roster
-                .map((p) => [p.nickname, rolesByUid.get(p.id)] as const)
-                .filter((pair): pair is [string, RoleResult] => Boolean(pair[1])),
-            );
+            const roles = new Map<string, RoleResult>();
+            const smurfs = new Map<string, SmurfResult>();
+            for (const player of roster) {
+              const analysis = analysisByUid.get(player.id);
+              if (!analysis) continue;
+              roles.set(player.nickname, analysis.role);
+              const smurf = computeSmurf(analysis, {
+                skillLevel: player.gameSkillLevel,
+                accountCreatedAt: createdAtByNickname.get(player.nickname),
+                recent: statsByUid.get(player.id)?.recent ?? null,
+              });
+              if (smurf?.flagged) smurfs.set(player.nickname, smurf);
+            }
+            roleByNickname = roles;
+            smurfByNickname = smurfs;
+            if (smurfs.size > 0) console.log(`[FACEIT+] ${smurfs.size} compte(s) atypique(s)`);
             rerenderStrips(); // les bandeaux déjà posés doivent intégrer le rôle
           })
-          .catch((e) => console.warn('[FACEIT+] rôles indisponibles :', e));
+          .catch((e) => console.warn('[FACEIT+] analyse indisponible :', e));
 
         // Premier (source externe Leetify, plus lente/faillible) : découplé, ne
         // bloque jamais l'affichage du reste.
@@ -374,6 +462,8 @@ export default defineContentScript({
         premierByNickname = new Map();
         statsByNickname = new Map();
         roleByNickname = new Map();
+        smurfByNickname = new Map();
+        createdAtByNickname = new Map();
         fullPool = [];
         activeIds = new Set();
         teamStats = null;
@@ -394,6 +484,47 @@ export default defineContentScript({
 
     ctx.addEventListener(window, 'wxt:locationchange', ({ newUrl }) => onLocationChange(newUrl));
     onLocationChange(location.href);
+
+    /** Ancienneté du compte formatée (« 24 j », « 5 mois », « 3 ans »). */
+    function formatAge(days: number | null): string {
+      if (days == null) return t('smurf.unknownAge');
+      if (days < 60) return t('smurf.days', { n: days });
+      if (days < 730) return t('smurf.months', { n: Math.round(days / 30) });
+      return t('smurf.years', { n: Math.round(days / 365) });
+    }
+
+    /** Signalement factuel d'un compte atypique (les chiffres sont dans l'infobulle). */
+    function createSmurfBadge(smurf: SmurfResult): HTMLElement {
+      const badge = document.createElement('span');
+      badge.className = SMURF_CLASS;
+      badge.textContent = t('smurf.badge');
+      badge.title =
+        t('smurf.tooltip', {
+          age: formatAge(smurf.ageDays),
+          matches: smurf.matches,
+          winrate: Math.round(smurf.winrate),
+          kd: smurf.kd.toFixed(2),
+          hs: Math.round(smurf.hs),
+        }) +
+        (smurf.kdGap != null && smurf.skillLevel != null && smurf.kdGap > 0
+          ? t('smurf.gap', { gap: `+${smurf.kdGap.toFixed(2)}`, level: smurf.skillLevel })
+          : '');
+      badge.style.cssText = [
+        'display:inline-flex',
+        'align-items:center',
+        'margin-left:6px',
+        'padding:1px 5px',
+        'border-radius:4px',
+        'background:rgba(251,191,36,.16)',
+        'border:1px solid rgba(251,191,36,.35)',
+        'color:#FBBF24',
+        'font:800 9px "Play","Segoe UI",Roboto,Arial,sans-serif',
+        'letter-spacing:.3px',
+        'vertical-align:middle',
+        'cursor:default',
+      ].join(';');
+      return badge;
+    }
 
     /** Rôle estimé : icône + nom en dégradé, détail des scores en infobulle. */
     function createRolePill(result: RoleResult): HTMLElement {

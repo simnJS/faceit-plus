@@ -294,16 +294,65 @@ export function aggregateMapStats(matches: RawHistoryMatch[]): MapStat[] {
     .sort((a, b) => b.games - a.games);
 }
 
-/** Récupère et agrège directement le K/D par map d'un joueur. */
-export async function fetchMapStats(uid: string, size = 100): Promise<MapStat[]> {
-  return aggregateMapStats(await fetchPlayerHistory(uid, size));
+/** Résumé de la forme récente, toutes maps confondues. */
+export interface RecentForm {
+  games: number;
+  kd: number; // total kills / total deaths
+  winrate: number; // %
 }
 
-/** Code pays ISO 3166-1 alpha-2 en minuscules (ex. "fr"), ou null si introuvable. */
-export async function fetchUserCountry(nickname: string): Promise<string | null> {
-  const res = await fetch(`https://www.faceit.com/api/users/v1/nicknames/${encodeURIComponent(nickname)}`);
-  if (!res.ok) return null;
-  const json = await res.json();
-  const country = json?.payload?.country;
-  return typeof country === 'string' && /^[a-z]{2}$/i.test(country) ? country.toLowerCase() : null;
+export function summarizeRecent(matches: RawHistoryMatch[]): RecentForm {
+  let kills = 0;
+  let deaths = 0;
+  let wins = 0;
+  for (const m of matches) {
+    kills += Number(m.i6) || 0;
+    deaths += Number(m.i8) || 0;
+    if (m.i10 === '1') wins += 1;
+  }
+  const games = matches.length;
+  return {
+    games,
+    kd: deaths > 0 ? kills / deaths : kills,
+    winrate: games > 0 ? (wins / games) * 100 : 0,
+  };
+}
+
+/** Récupère l'historique une fois et en tire le K/D par map + la forme récente. */
+export async function fetchMapStats(
+  uid: string,
+  size = 100,
+): Promise<{ maps: MapStat[]; recent: RecentForm }> {
+  const history = await fetchPlayerHistory(uid, size);
+  return { maps: aggregateMapStats(history), recent: summarizeRecent(history) };
+}
+
+export interface UserProfile {
+  /** Code pays ISO 3166-1 alpha-2 en minuscules (ex. "fr"). */
+  country: string | null;
+  /** Date de création du compte (ms epoch), pour l'âge du compte. */
+  createdAt: number | null;
+}
+
+/** Profil public d'un joueur (un seul appel, mutualisé entre drapeaux et smurf). */
+export async function fetchUserProfile(nickname: string): Promise<UserProfile> {
+  try {
+    const res = await fetch(
+      `https://www.faceit.com/api/users/v1/nicknames/${encodeURIComponent(nickname)}`,
+    );
+    if (!res.ok) return { country: null, createdAt: null };
+    const payload = (await res.json())?.payload;
+    const rawCountry = payload?.country;
+    const rawCreated = payload?.created_at ?? payload?.activated_at;
+    const created = rawCreated ? Date.parse(String(rawCreated)) : NaN;
+    return {
+      country:
+        typeof rawCountry === 'string' && /^[a-z]{2}$/i.test(rawCountry)
+          ? rawCountry.toLowerCase()
+          : null,
+      createdAt: Number.isFinite(created) ? created : null,
+    };
+  } catch {
+    return { country: null, createdAt: null };
+  }
 }

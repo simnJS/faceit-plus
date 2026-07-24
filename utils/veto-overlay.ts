@@ -90,21 +90,30 @@ function banRateColor(pct: number): string {
   return '#a0a0a0';
 }
 
+export interface VetoBadgeOptions {
+  faction1: TeamMapStat | undefined;
+  faction2: TeamMapStat | undefined;
+  banRate: number | null | undefined;
+  /** Map conseillée au ban (avec l'écart de winrate qui le justifie). */
+  banAdvice?: { delta: number } | null;
+  /** Probabilité (%) que cette map soit finalement jouée. */
+  likelyPercent?: number | null;
+  t: Translator;
+}
+
 /**
  * Badge posé sur une tuile de veto : winrate équipe 1 / équipe 2 (liseré rose /
- * bleu, couleurs des factions FACEIT) + probabilité de ban du capitaine adverse.
+ * bleu, couleurs des factions FACEIT), probabilité de ban du capitaine adverse,
+ * et le cas échéant le conseil de ban ou la map probable.
  */
-export function createVetoBadge(
-  faction1: TeamMapStat | undefined,
-  faction2: TeamMapStat | undefined,
-  banRate: number | null | undefined,
-  t: Translator,
-): HTMLElement {
+export function createVetoBadge(options: VetoBadgeOptions): HTMLElement {
+  const { faction1, faction2, banRate, banAdvice, likelyPercent, t } = options;
+
   const wrap = document.createElement('div');
   wrap.className = VETO_BADGE_CLASS;
-  if (banRate != null) wrap.dataset.hasBan = '1';
   wrap.style.cssText = [
     'display:flex',
+    'flex-wrap:wrap',
     'justify-content:center',
     'gap:4px',
     'margin-top:4px',
@@ -152,6 +161,42 @@ export function createVetoBadge(
     ].join(';');
     wrap.appendChild(ban);
   }
+
+  // Conseils : bandeau pleine largeur sous les pastilles
+  const advice = (text: string, tooltip: string, color: string, background: string) => {
+    const chip = document.createElement('span');
+    chip.textContent = text;
+    chip.title = tooltip;
+    chip.style.cssText = [
+      'flex:1 0 100%',
+      'margin-top:3px',
+      'padding:3px 4px',
+      'text-align:center',
+      'border-radius:4px',
+      'font-size:9px',
+      'letter-spacing:.4px',
+      `color:${color}`,
+      `background:${background}`,
+    ].join(';');
+    wrap.appendChild(chip);
+  };
+
+  if (banAdvice) {
+    advice(
+      t('veto.banAdvice'),
+      t('veto.banAdviceTooltip', { delta: Math.round(banAdvice.delta) }),
+      '#FF5151',
+      'rgba(255,81,81,.16)',
+    );
+  } else if (likelyPercent != null) {
+    advice(
+      t('veto.likely', { p: likelyPercent }),
+      t('veto.likelyTooltip'),
+      '#32D35A',
+      'rgba(50,211,90,.14)',
+    );
+  }
+
   return wrap;
 }
 

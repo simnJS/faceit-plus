@@ -28,7 +28,9 @@ export interface Settings {
   premier: boolean;
   mapStats: boolean;
   roles: boolean;
+  smurf: boolean;
   vetoStats: boolean;
+  vetoAdvice: boolean;
   autoAccept: AutoAcceptSettings;
   autoVeto: AutoVetoSettings;
 }
@@ -39,7 +41,9 @@ export const DEFAULT_SETTINGS: Settings = {
   premier: true,
   mapStats: true,
   roles: true,
+  smurf: true,
   vetoStats: true,
+  vetoAdvice: true,
   autoAccept: { enabled: false, delaySeconds: 2 },
   autoVeto: {
     enabled: false,

@@ -206,7 +206,9 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
     toggle(t('display.premier'), settings.premier, (v) => update({ premier: v })),
     toggle(t('display.mapStats'), settings.mapStats, (v) => update({ mapStats: v })),
     toggle(t('display.roles'), settings.roles, (v) => update({ roles: v })),
+    toggle(t('display.smurf'), settings.smurf, (v) => update({ smurf: v })),
     toggle(t('display.vetoStats'), settings.vetoStats, (v) => update({ vetoStats: v })),
+    toggle(t('display.vetoAdvice'), settings.vetoAdvice, (v) => update({ vetoAdvice: v })),
   );
   panel.appendChild(display);
 
