@@ -19,8 +19,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      # npm install plutôt que npm ci : le fichier de verrouillage est généré sous
+      # Windows et n'y liste pas les dépendances optionnelles propres à Linux.
       - name: Installer les dépendances
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Vérifier les types
         run: npm run compile

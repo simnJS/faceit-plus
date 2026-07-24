@@ -23,8 +23,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Voir ci.yml : le verrou Windows n'inclut pas les variantes Linux.
       - name: Installer les dépendances
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Vérifier que le tag correspond à package.json
         if: startsWith(github.ref, 'refs/tags/v')
