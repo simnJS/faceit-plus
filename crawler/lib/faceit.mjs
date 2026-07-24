@@ -12,34 +12,49 @@
 const OFFICIAL = 'https://open.faceit.com/data/v4';
 const PUBLIC = 'https://www.faceit.com/api';
 
+/**
+ * Limiteur de débit sûr en parallèle : chaque appelant réserve son créneau de
+ * façon synchrone avant d'attendre, ce qui évite que plusieurs requêtes
+ * concurrentes partent en même temps.
+ *
+ * Mesuré sur l'API officielle : ~30 req/s passent sans refus, au-delà les 429
+ * apparaissent. La valeur par défaut du crawler reste en dessous.
+ */
 export class RateLimiter {
   /** @param {number} rps requêtes par seconde */
   constructor(rps) {
     this.minInterval = 1000 / Math.max(0.2, rps);
-    this.last = 0;
+    this.next = 0;
   }
 
   async wait() {
     const now = Date.now();
-    const delay = this.last + this.minInterval - now;
+    const slot = Math.max(now, this.next);
+    this.next = slot + this.minInterval; // réservation immédiate
+    const delay = slot - now;
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-    this.last = Date.now();
   }
 }
 
 export class FaceitClient {
   /**
-   * @param {{apiKey: string, limiter: RateLimiter, onLog?: (msg: string) => void}} options
+   * Deux limiteurs distincts : l'API officielle et l'endpoint public de veto
+   * n'ont pas le même plafond (mesuré : ~30 req/s contre nettement plus).
+   * Les faire partager un seul limiteur bridait inutilement l'ensemble.
+   *
+   * @param {{apiKey: string, limiter: RateLimiter, vetoLimiter?: RateLimiter,
+   *          onLog?: (msg: string) => void}} options
    */
-  constructor({ apiKey, limiter, onLog = () => {} }) {
+  constructor({ apiKey, limiter, vetoLimiter, onLog = () => {} }) {
     this.apiKey = apiKey;
     this.limiter = limiter;
+    this.vetoLimiter = vetoLimiter ?? limiter;
     this.log = onLog;
   }
 
   /** Requête avec limitation de débit et reprise sur 429/5xx. */
   async #request(url, { auth = true, attempt = 1 } = {}) {
-    await this.limiter.wait();
+    await (auth ? this.limiter : this.vetoLimiter).wait();
     const headers = { Accept: 'application/json' };
     if (auth) headers.Authorization = `Bearer ${this.apiKey}`;
 
@@ -73,6 +88,11 @@ export class FaceitClient {
   async playerByNickname(nickname) {
     const url = `${OFFICIAL}/players?nickname=${encodeURIComponent(nickname)}&game=cs2`;
     return this.#request(url);
+  }
+
+  /** Profil complet d'un joueur (pays, niveau, elo) à partir de son identifiant. */
+  async playerById(playerId) {
+    return this.#request(`${OFFICIAL}/players/${encodeURIComponent(playerId)}`);
   }
 
   /**

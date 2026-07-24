@@ -23,7 +23,9 @@ const { values } = parseArgs({
     'max-matches': { type: 'string', default: '2000' },
     'max-depth': { type: 'string', default: '4' },
     'per-player': { type: 'string', default: '30' },
-    rps: { type: 'string', default: '3' },
+    rps: { type: 'string', default: '22' },
+    'veto-rps': { type: 'string', default: '35' },
+    concurrency: { type: 'string', default: '10' },
     db: { type: 'string', default: 'crawler/faceit.db' },
     help: { type: 'boolean', default: false },
   },
@@ -39,7 +41,11 @@ Crawler FACEIT — constitue une base de vetos pour entraîner un modèle.
   --max-matches <n>    nombre de matchs à ajouter avant de s'arrêter (défaut 2000)
   --max-depth <n>      profondeur maximale depuis les graines (défaut 4)
   --per-player <n>     matchs récupérés par joueur (défaut 30, max 100)
-  --rps <n>            requêtes par seconde (défaut 3) — reste raisonnable
+  --rps <n>            plafond de requêtes par seconde (défaut 20)
+  --concurrency <n>    matchs traités en parallèle (défaut 4)
+
+  Mesures : l'API officielle accepte ~30 req/s, les 429 apparaissent au-delà.
+  Les valeurs par défaut restent sous ce seuil.
   --db <fichier>       base SQLite (défaut crawler/faceit.db)
 
 Clé d'API gratuite : https://developers.faceit.com → application → API key (server side).
@@ -59,11 +65,13 @@ const seeds = values.seed.length > 0 ? values.seed : [process.env.FACEIT_SEED].f
 const maxMatches = Number(values['max-matches']);
 const maxDepth = Number(values['max-depth']);
 const perPlayer = Math.min(100, Number(values['per-player']));
+const concurrency = Math.max(1, Number(values.concurrency));
 
 const db = new CrawlDb(values.db);
 const client = new FaceitClient({
   apiKey,
   limiter: new RateLimiter(Number(values.rps)),
+  vetoLimiter: new RateLimiter(Number(values['veto-rps'])),
   onLog: (msg) => console.log(msg),
 });
 
@@ -80,6 +88,8 @@ process.on('SIGINT', () => {
 function extractMatch(details, historyItem = {}) {
   const factions = details?.teams ?? {};
   const players = [];
+  const teams = [];
+
   for (const [faction, team] of Object.entries(factions)) {
     const leaderId = team?.leader;
     for (const p of team?.roster ?? []) {
@@ -93,20 +103,50 @@ function extractMatch(details, historyItem = {}) {
         isLeader: p.player_id === leaderId,
       });
     }
+    // `stats` porte l'estimation FACEIT : probabilité de victoire, rating
+    // d'équipe et étendue des niveaux (indice d'hétérogénéité du lobby).
+    const stats = team?.stats ?? {};
+    teams.push({
+      faction,
+      name: team?.name ?? null,
+      type: team?.type ?? null,
+      rating: stats.rating ?? null,
+      winProbability: stats.winProbability ?? null,
+      skillAvg: stats.skillLevel?.average ?? null,
+      skillMin: stats.skillLevel?.range?.min ?? null,
+      skillMax: stats.skillLevel?.range?.max ?? null,
+    });
   }
+
   const picked = details?.voting?.map?.pick ?? [];
+  const offered = (details?.voting?.map?.entities ?? [])
+    .map((e) => e.class_name ?? e.guid)
+    .filter(Boolean);
+
   return {
     match: {
       id: details.match_id,
       playedAt: (details.started_at ?? details.finished_at ?? 0) * 1000 || null,
       region: details.region ?? historyItem.region ?? null,
       competition: details.competition_type ?? historyItem.competition_type ?? null,
+      competitionId: details.competition_id ?? null,
+      competitionName: details.competition_name ?? null,
+      organizer: details.organizer_id ?? null,
       gameMode: details.game_mode ?? historyItem.game_mode ?? null,
       bestOf: details.best_of ?? null,
+      calculateElo: details.calculate_elo ?? null,
+      status: details.status ?? null,
+      configuredAt: details.configured_at ?? null,
+      startedAt: details.started_at ?? null,
+      finishedAt: details.finished_at ?? null,
       mapPicked: Array.isArray(picked) ? (picked[0] ?? null) : null,
+      offeredPool: offered.length ? offered.join(',') : null,
       winner: details.results?.winner ?? null,
+      scoreFaction1: details.results?.score?.faction1 ?? null,
+      scoreFaction2: details.results?.score?.faction2 ?? null,
     },
     players,
+    teams,
   };
 }
 
@@ -159,24 +199,32 @@ while (added < maxMatches && !stopping) {
   const history = await client.playerHistory(next.id, { limit: perPlayer });
   let newForPlayer = 0;
 
-  for (const item of history) {
-    if (added >= maxMatches || stopping) break;
-    const matchId = item.match_id ?? item.matchId;
-    if (!matchId || db.hasMatch(matchId)) continue;
+  // Les matchs inconnus sont traités en parallèle : le limiteur de débit
+  // partagé garde l'ensemble sous le plafond de l'API.
+  const todo = history
+    .map((item) => ({ item, matchId: item.match_id ?? item.matchId }))
+    .filter(({ matchId }) => matchId && !db.hasMatch(matchId));
 
-    const details = await client.matchDetails(matchId);
-    if (!details) continue;
-    const { match, players } = extractMatch(details, item);
-    // Seuls les matchs avec veto nous intéressent pour le modèle.
-    const veto = extractVeto(await client.matchVeto(matchId));
-
-    db.saveMatch(match, players, veto);
-    for (const p of players) {
-      db.addPlayer({ ...p, depth: next.depth + 1 });
-    }
-    added += 1;
-    newForPlayer += 1;
-  }
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (cursor < todo.length && added < maxMatches && !stopping) {
+        const { item, matchId } = todo[cursor++];
+        const [details, vetoEntities] = await Promise.all([
+          client.matchDetails(matchId),
+          client.matchVeto(matchId),
+        ]);
+        if (!details) continue;
+        const { match, players, teams } = extractMatch(details, item);
+        db.saveMatch(match, players, extractVeto(vetoEntities), teams);
+        for (const p of players) {
+          db.addPlayer({ ...p, depth: next.depth + 1 });
+        }
+        added += 1;
+        newForPlayer += 1;
+      }
+    }),
+  );
 
   db.markPlayerCrawled(next.id);
   const stats = db.stats();

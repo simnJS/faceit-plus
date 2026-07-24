@@ -18,18 +18,43 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS players_queue ON players(crawled_at, depth);
 
 CREATE TABLE IF NOT EXISTS matches (
-  id           TEXT PRIMARY KEY,
-  played_at    INTEGER,
-  region       TEXT,
-  competition  TEXT,
-  game_mode    TEXT,
-  best_of      INTEGER,
-  map_picked   TEXT,
-  winner       TEXT,
-  fetched_at   INTEGER NOT NULL,
-  has_veto     INTEGER NOT NULL DEFAULT 0
+  id               TEXT PRIMARY KEY,
+  played_at        INTEGER,
+  region           TEXT,
+  competition      TEXT,
+  competition_id   TEXT,
+  competition_name TEXT,
+  organizer        TEXT,
+  game_mode        TEXT,
+  best_of          INTEGER,
+  calculate_elo    INTEGER,
+  status           TEXT,
+  configured_at    INTEGER,
+  started_at       INTEGER,
+  finished_at      INTEGER,
+  map_picked       TEXT,
+  offered_pool     TEXT,       -- maps proposées au vote, séparées par des virgules
+  winner           TEXT,
+  score_faction1   INTEGER,
+  score_faction2   INTEGER,
+  fetched_at       INTEGER NOT NULL,
+  has_veto         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS matches_veto ON matches(has_veto);
+
+-- Contexte par équipe : indices de premade (nom, type) et estimations FACEIT.
+CREATE TABLE IF NOT EXISTS match_teams (
+  match_id        TEXT NOT NULL,
+  faction         TEXT NOT NULL,
+  name            TEXT,
+  type            TEXT,        -- "lobby" (file d'attente) ou équipe constituée
+  rating          REAL,
+  win_probability REAL,
+  skill_avg       REAL,
+  skill_min       INTEGER,
+  skill_max       INTEGER,
+  PRIMARY KEY (match_id, faction)
+);
 
 CREATE TABLE IF NOT EXISTS match_players (
   match_id  TEXT NOT NULL,
@@ -53,12 +78,29 @@ CREATE TABLE IF NOT EXISTS veto_events (
 );
 `;
 
+// Colonnes ajoutées après coup : `CREATE TABLE IF NOT EXISTS` ne les pose pas sur
+// une base existante, on les ajoute donc une par une si elles manquent.
+const MIGRATIONS = [
+  ['matches', 'competition_id', 'TEXT'],
+  ['matches', 'competition_name', 'TEXT'],
+  ['matches', 'organizer', 'TEXT'],
+  ['matches', 'calculate_elo', 'INTEGER'],
+  ['matches', 'status', 'TEXT'],
+  ['matches', 'configured_at', 'INTEGER'],
+  ['matches', 'started_at', 'INTEGER'],
+  ['matches', 'finished_at', 'INTEGER'],
+  ['matches', 'offered_pool', 'TEXT'],
+  ['matches', 'score_faction1', 'INTEGER'],
+  ['matches', 'score_faction2', 'INTEGER'],
+];
+
 export class CrawlDb {
   /** @param {string} file chemin du fichier SQLite */
   constructor(file) {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(SCHEMA);
+    this.#migrate();
 
     this.stmt = {
       addPlayer: this.db.prepare(
@@ -72,9 +114,17 @@ export class CrawlDb {
       ),
       hasMatch: this.db.prepare('SELECT 1 FROM matches WHERE id = ?'),
       addMatch: this.db.prepare(
-        `INSERT INTO matches (id, played_at, region, competition, game_mode, best_of, map_picked, winner, fetched_at, has_veto)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO matches (
+           id, played_at, region, competition, competition_id, competition_name, organizer,
+           game_mode, best_of, calculate_elo, status, configured_at, started_at, finished_at,
+           map_picked, offered_pool, winner, score_faction1, score_faction2, fetched_at, has_veto
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET has_veto = excluded.has_veto`,
+      ),
+      addMatchTeam: this.db.prepare(
+        `INSERT INTO match_teams (match_id, faction, name, type, rating, win_probability, skill_avg, skill_min, skill_max)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(match_id, faction) DO NOTHING`,
       ),
       addMatchPlayer: this.db.prepare(
         `INSERT INTO match_players (match_id, player_id, faction, is_leader, level, elo)
@@ -87,6 +137,16 @@ export class CrawlDb {
          ON CONFLICT(match_id, order_index) DO NOTHING`,
       ),
     };
+  }
+
+  /** Ajoute les colonnes manquantes sur une base créée par une version antérieure. */
+  #migrate() {
+    for (const [table, column, type] of MIGRATIONS) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!columns.some((c) => c.name === column)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      }
+    }
   }
 
   /** Ajoute un joueur à la file s'il est inconnu. */
@@ -107,8 +167,8 @@ export class CrawlDb {
     return this.stmt.hasMatch.all(id).length > 0;
   }
 
-  /** Enregistre un match, ses joueurs et sa séquence de veto en une transaction. */
-  saveMatch(match, players, vetoEvents) {
+  /** Enregistre un match, ses équipes, ses joueurs et son veto en une transaction. */
+  saveMatch(match, players, vetoEvents, teams = []) {
     this.db.exec('BEGIN');
     try {
       this.stmt.addMatch.run(
@@ -116,13 +176,37 @@ export class CrawlDb {
         match.playedAt ?? null,
         match.region ?? null,
         match.competition ?? null,
+        match.competitionId ?? null,
+        match.competitionName ?? null,
+        match.organizer ?? null,
         match.gameMode ?? null,
         match.bestOf ?? null,
+        match.calculateElo == null ? null : match.calculateElo ? 1 : 0,
+        match.status ?? null,
+        match.configuredAt ?? null,
+        match.startedAt ?? null,
+        match.finishedAt ?? null,
         match.mapPicked ?? null,
+        match.offeredPool ?? null,
         match.winner ?? null,
+        match.scoreFaction1 ?? null,
+        match.scoreFaction2 ?? null,
         Date.now(),
         vetoEvents?.length ? 1 : 0,
       );
+      for (const team of teams) {
+        this.stmt.addMatchTeam.run(
+          match.id,
+          team.faction,
+          team.name ?? null,
+          team.type ?? null,
+          team.rating ?? null,
+          team.winProbability ?? null,
+          team.skillAvg ?? null,
+          team.skillMin ?? null,
+          team.skillMax ?? null,
+        );
+      }
       for (const p of players) {
         this.stmt.addMatchPlayer.run(
           match.id,

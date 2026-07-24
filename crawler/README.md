@@ -41,10 +41,51 @@ Options utiles :
 | `--max-matches <n>` | s'arrête après avoir ajouté n matchs |
 | `--max-depth <n>` | limite l'éloignement par rapport aux graines |
 | `--per-player <n>` | matchs récupérés par joueur (max 100) |
-| `--rps <n>` | requêtes par seconde, 3 par défaut |
+| `--rps <n>` | plafond sur l'API officielle, 22 par défaut |
+| `--veto-rps <n>` | plafond sur l'endpoint de veto, 35 par défaut |
+| `--concurrency <n>` | matchs traités en parallèle, 10 par défaut |
+
+### Débits mesurés
+
+| Parallélisme | API officielle | Endpoint de veto |
+| --- | --- | --- |
+| 2 | 16 req/s, aucun refus | 17 req/s, aucun refus |
+| 4 | 30 req/s, aucun refus | 32 req/s, aucun refus |
+| 8 | 52 req/s, **9 refus sur 40** | 60 req/s, aucun refus |
+
+L'API officielle plafonne donc autour de **30 req/s**, l'endpoint de veto encaisse
+nettement plus. Les deux ont leur propre limiteur, réglé sous ces seuils.
+
+En pratique le crawler tient **~16 matchs/seconde**, soit près de 60 000 par
+heure. Monter `--rps` à 28 ne sert à rien : les 429 apparaissent et les pauses de
+reprise annulent exactement le gain (mesuré : 17 matchs/s pour 10 refus). Le
+plafond réel tient à la clé d'API, pas au client.
+
+Ordres de grandeur : 100 000 matchs en moins de deux heures, un million en une
+nuit. Le débit baisse toutefois avec la profondeur, le crawler retombant de plus
+en plus souvent sur des matchs déjà connus.
+
+## Suivi
+
+```bash
+npm run crawl:stats
+```
 
 Le crawl est **reprenable** : l'état vit dans la base, relancer la commande
 continue là où on s'est arrêté. `Ctrl+C` termine proprement le joueur en cours.
+
+## Pays des joueurs
+
+Le roster d'un match ne contient pas le pays : il faut une requête par joueur,
+faite à part pour ne pas ralentir le crawl et une seule fois par joueur.
+
+```bash
+npm run crawl:enrich -- --limit 2000
+```
+
+Le pays sert surtout à décrire la **composition du lobby** (nombre de
+nationalités, taille du plus gros bloc commun), qui renseigne sur le degré de
+coordination d'une équipe — bien plus parlant que la nationalité prise isolément.
 
 ## Jeu d'entraînement
 

@@ -13,6 +13,8 @@
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
     "crawl": "node crawler/crawl.mjs",
+    "crawl:enrich": "node crawler/enrich.mjs",
+    "crawl:stats": "node crawler/stats.mjs",
     "crawl:export": "node crawler/export.mjs",
     "postinstall": "wxt prepare"
   },
