@@ -43,5 +43,8 @@ jobs:
         with:
           name: faceit-plus-${{ github.sha }}
           path: .output/*.zip
+          # .output commence par un point : sans cette option, l'action ignore
+          # les fichiers considérés comme cachés et n'envoie rien.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
