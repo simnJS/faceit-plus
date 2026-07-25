@@ -111,7 +111,10 @@ export function recommendBan(context: VetoContext): BanAdvice | null {
   if (hasTrainedModel) {
     const ranked = recommendBans(MODEL, toModelState(context));
     const best = ranked[0];
-    if (best && best.gain > 0.005) {
+    // On conseille toujours : « quelle map bannir » a une réponse même quand la
+    // marge est mince. Exiger un écart minimum revenait à se taire dans les
+    // situations les plus fréquentes, celles où le pool est équilibré.
+    if (best) {
       return {
         mapId: best.map,
         advantage: winrate(context.theirs, best.map) - winrate(context.mine, best.map),

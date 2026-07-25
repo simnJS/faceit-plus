@@ -22,6 +22,7 @@ import { computeTeamMapStats, type TeamMapStat } from '@/utils/team-map-stats';
 import { resolveCaptainBanRates } from '@/utils/ban-rate';
 import {
   createVetoBadge,
+  diagnoseVeto,
   findVetoCards,
   isCardBanned,
   normalizeMapName,
@@ -31,7 +32,7 @@ import { DEFAULT_SETTINGS, getSettings, watchSettings, type Settings } from '@/u
 import { createTranslator, type Translator } from '@/utils/i18n';
 import { resolveAnalysis } from '@/utils/analysis-cache';
 import { computeSmurf, type SmurfResult } from '@/utils/smurf';
-import { predictFinalMap, recommendBan } from '@/utils/veto-advice';
+import { hasTrainedModel, predictFinalMap, recommendBan } from '@/utils/veto-advice';
 import { roleIconSvg, ROLE_GRADIENT, SCORED_ROLES, type RoleResult } from '@/utils/roles';
 import { runAutoAccept } from '@/utils/auto-accept';
 import { runAutoVeto, type VetoTileCandidate } from '@/utils/auto-veto';
@@ -72,6 +73,8 @@ export default defineContentScript({
     let banRateByMapId: Map<string, number> | null = null;
     let banRateCounts: Record<string, { drops: number; opportunities: number }> | null = null;
     let selfFaction: 'faction1' | 'faction2' | null = null;
+    let vetoDiagnosed = false;
+    let adviceLogged = false;
 
     // Réglages : chargés au démarrage, mis à jour en direct depuis le panneau.
     let settings: Settings = DEFAULT_SETTINGS;
@@ -218,7 +221,15 @@ export default defineContentScript({
     const applyVetoBadges = () => {
       if (!teamStats) return;
       const cards = findVetoCards();
-      if (cards.length === 0) return;
+      if (cards.length === 0) {
+        // Rien trouvé : on relève l'état de la page une fois par salle, pour
+        // pouvoir corriger les sélecteurs sur pièces plutôt qu'au jugé.
+        if (!vetoDiagnosed) {
+          vetoDiagnosed = true;
+          console.log('[FACEIT+] veto introuvable — relevé de la page :', diagnoseVeto());
+        }
+        return;
+      }
       const nameToId = new Map(fullPool.map((m) => [normalizeMapName(m.name), m.id]));
 
       // Notre camp / camp adverse selon la faction du joueur (par défaut faction1).
@@ -247,6 +258,16 @@ export default defineContentScript({
           adviceMapId = reco.mapId;
           adviceDelta = reco.gain ?? reco.advantage;
           adviceFromModel = reco.fromModel;
+        }
+        if (!adviceLogged) {
+          adviceLogged = true;
+          console.log('[FACEIT+] conseil de veto :', {
+            modèle: hasTrainedModel ? 'entraîné' : 'règle simple',
+            mapsEnJeu: activePool.map((m) => m.id),
+            notreTour: ourTurn,
+            capitaineAdverseConnu: Boolean(banRateCounts),
+            recommandation: reco ?? 'aucune',
+          });
         }
         likelyByMapId = predictFinalMap(context, ourTurn);
       }
@@ -484,6 +505,8 @@ export default defineContentScript({
         banRateByMapId = null;
         banRateCounts = null;
         selfFaction = null;
+        vetoDiagnosed = false;
+        adviceLogged = false;
       } else if (matchId !== currentRoomId) {
         void enterRoom(matchId);
       }

@@ -53,6 +53,52 @@ function findVetoContainers(): HTMLElement[] {
   return found;
 }
 
+/**
+ * Relevé de ce que la page contient réellement autour du veto.
+ *
+ * Les sélecteurs utilisés viennent d'une analyse d'une autre extension, pas d'une
+ * observation directe : si FACEIT a changé sa structure, rien ne s'accroche et la
+ * fonctionnalité est muette. Ce relevé, volontairement large, permet de trancher
+ * sur pièces plutôt que de deviner.
+ */
+export function diagnoseVeto(): Record<string, unknown> {
+  const survey: Record<string, unknown> = {};
+  const classMatches = (needle: string) =>
+    [...document.querySelectorAll<HTMLElement>('[class]')]
+      .filter((el) => (el.className || '').toString().toLowerCase().includes(needle))
+      .slice(0, 8)
+      .map((el) => (el.className || '').toString().split(' ')[0]);
+
+  survey.classesVeto = [...new Set(classMatches('veto'))];
+  survey.classesPreference = [...new Set(classMatches('preference'))];
+  survey.testIds = [
+    ...new Set(
+      [...document.querySelectorAll('[data-testid]')]
+        .map((el) => el.getAttribute('data-testid'))
+        .filter((id) => id && /veto|map|preference|vote/i.test(id)),
+    ),
+  ].slice(0, 12);
+
+  survey.conteneursStricts = document.querySelectorAll(
+    "[class^='VetoList__Container']",
+  ).length;
+  survey.conteneursLarges = document.querySelectorAll("[class*='VetoList']").length;
+  survey.tuilesPreference = document.querySelectorAll(
+    "div[data-testid='matchPreference']",
+  ).length;
+  survey.boutonsActifs = document.querySelectorAll(
+    "div[data-testid='matchPreference'] button:not([disabled])",
+  ).length;
+  survey.cartesTrouvees = findVetoCards().length;
+  survey.nomsDetectes = findVetoCards()
+    .map((c) => c.name)
+    .slice(0, 10);
+
+  // Y a-t-il un composant isolé (shadow DOM) qui contiendrait le veto ?
+  survey.shadowRoots = [...document.querySelectorAll('*')].filter((el) => el.shadowRoot).length;
+  return survey;
+}
+
 /** Toutes les cartes de map du veto visibles, avec leur label et leur nom. */
 export function findVetoCards(): VetoCard[] {
   const cards: VetoCard[] = [];
