@@ -20,6 +20,12 @@ export interface BanRates {
   datasetSize: number;
   /** map codename → probabilité de ban en % (absente si jamais vue au veto). */
   probByMap: Record<string, number>;
+  /**
+   * Compteurs bruts par map : bans effectifs et occasions. Le modèle applique
+   * son propre lissage dessus, identique à celui de l'entraînement — d'où
+   * l'exposition des comptes plutôt que d'un taux déjà transformé.
+   */
+  counts: Record<string, { drops: number; opportunities: number }>;
 }
 
 interface CacheEntry {
@@ -27,7 +33,8 @@ interface CacheEntry {
   t: number;
 }
 
-const CACHE_KEY = 'faceitplus:banRateCache';
+// v2 : ajout des compteurs bruts, nécessaires au modèle
+const CACHE_KEY = 'faceitplus:banRateCache:v2';
 const TTL_MS = 6 * 60 * 60 * 1000;
 const VETO_FETCH_CHUNK = 5; // requêtes democracy en parallèle max
 
@@ -103,7 +110,12 @@ export async function resolveCaptainBanRates(
     }
   }
 
-  const data: BanRates = { datasetSize: captainMatches.length, probByMap };
+  const counts: Record<string, { drops: number; opportunities: number }> = {};
+  for (const [id, entry] of acc) {
+    counts[id] = { drops: entry.drop, opportunities: entry.opportunities };
+  }
+
+  const data: BanRates = { datasetSize: captainMatches.length, probByMap, counts };
   stored[captainId] = { d: data, t: now };
   await browser.storage.local.set({ [CACHE_KEY]: stored });
   return data;

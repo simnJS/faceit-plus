@@ -18,7 +18,13 @@ const { values } = parseArgs({
     db: { type: 'string', default: 'crawler/faceit.db' },
     out: { type: 'string', default: 'crawler/dataset.jsonl' },
     'min-pool': { type: 'string', default: '5' },
-    'official-only': { type: 'boolean', default: false },
+    // Le crawl ramasse aussi des hubs et des parties personnalisées : maps d'aim,
+    // arènes 1v1, cartes d'atelier. Elles n'ont rien à faire dans un modèle de
+    // veto compétitif et gaspillent la capacité du modèle.
+    'official-only': { type: 'boolean', default: true },
+    'all-competitions': { type: 'boolean', default: false },
+    /** Part minimale des matchs où une map doit apparaître pour être retenue. */
+    'min-map-share': { type: 'string', default: '0.02' },
   },
 });
 
@@ -48,6 +54,43 @@ const teamsFor = db.prepare(
    FROM match_teams WHERE match_id = ?`,
 );
 
+// Historique par joueur, pour calculer le vécu d'une équipe sur chaque map
+// AVANT la date du match considéré : sans ce filtre temporel, le modèle
+// apprendrait à partir de matchs qui n'avaient pas encore eu lieu.
+const history = new Map();
+for (const row of db
+  .prepare(
+    `SELECT mp.player_id, mp.faction, m.map_picked, m.winner, m.played_at
+     FROM match_players mp JOIN matches m ON m.id = mp.match_id
+     WHERE m.map_picked IS NOT NULL AND m.winner IS NOT NULL AND m.played_at IS NOT NULL`,
+  )
+  .all()) {
+  if (!history.has(row.player_id)) history.set(row.player_id, []);
+  history.get(row.player_id).push({
+    at: row.played_at,
+    map: row.map_picked,
+    won: row.winner === row.faction ? 1 : 0,
+  });
+}
+for (const list of history.values()) list.sort((a, b) => a.at - b.at);
+
+/** Matchs joués et gagnés par une équipe sur chaque map, avant `before`. */
+function teamMapRecord(playerIds, before, maps) {
+  const record = {};
+  for (const map of maps) record[map] = [0, 0]; // [joués, gagnés]
+  for (const id of playerIds) {
+    for (const entry of history.get(id) ?? []) {
+      if (entry.at >= before) break; // trié par date
+      const slot = record[entry.map];
+      if (slot) {
+        slot[0] += 1;
+        slot[1] += entry.won;
+      }
+    }
+  }
+  return record;
+}
+
 const average = (rows, field) => {
   const nums = rows.map((r) => r[field]).filter((v) => typeof v === 'number');
   return nums.length ? Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(3)) : null;
@@ -69,22 +112,55 @@ function composition(players) {
 /** Un nom d'équipe auto-généré (« team_pseudo ») signale une file d'attente. */
 const isNamedTeam = (name) => (name ? (/^team_/i.test(name) ? 0 : 1) : null);
 
+// Premier passage : quelles maps sont réellement jouées en compétitif ? On les
+// déduit des données plutôt que de figer une liste, pour survivre aux évolutions
+// du pool officiel.
+const officialOnly = values['official-only'] && !values['all-competitions'];
+const eligible = matches.filter(
+  (m) => !officialOnly || (m.organizer === 'faceit' && m.game_mode === '5v5' && m.competition === 'matchmaking'),
+);
+const mapCounts = new Map();
+for (const match of eligible) {
+  for (const event of eventsFor.all(match.id)) {
+    mapCounts.set(event.map, (mapCounts.get(event.map) ?? 0) + 1);
+  }
+}
+const minShare = Number(values['min-map-share']);
+const knownMaps = new Set(
+  [...mapCounts.entries()]
+    .filter(([, count]) => count / Math.max(1, eligible.length) >= minShare)
+    .map(([map]) => map),
+);
+console.log(
+  `${knownMaps.size} maps retenues sur ${mapCounts.size} rencontrées ` +
+    `(seuil : ${(minShare * 100).toFixed(1)} % des matchs) : ${[...knownMaps].sort().join(', ')}`,
+);
+
 const lines = [];
 let skipped = 0;
+let truncatedPools = 0; // matchs où `offered_pool` était plus petit que la réalité
+let offMap = 0; // matchs écartés pour cause de map hors pool compétitif
 
-for (const match of matches) {
-  if (values['official-only'] && match.organizer !== 'faceit') {
+for (const match of eligible) {
+  const events = eventsFor.all(match.id);
+  const drops = events.filter((e) => e.action === 'drop' && !e.is_random);
+
+  // Le pool de départ est l'ensemble des maps APPARAISSANT DANS LE VETO, jamais
+  // `offered_pool` : ce champ vient de `voting.map.entities`, qui rétrécit au fil
+  // des bans. Sur un match terminé il ne contient plus que les survivantes, ce
+  // qui donnerait un pool tronqué — et une prédiction faussement facile.
+  const fromEvents = [...new Set(events.map((e) => e.map))].sort();
+  const offered = match.offered_pool ? match.offered_pool.split(',') : [];
+  const pool = [...new Set([...fromEvents, ...offered])].sort();
+  if (offered.length > 0 && offered.length < fromEvents.length) truncatedPools += 1;
+  if (pool.length < minPool || drops.length === 0) {
     skipped += 1;
     continue;
   }
-
-  const events = eventsFor.all(match.id);
-  const drops = events.filter((e) => e.action === 'drop' && !e.is_random);
-  const pool = match.offered_pool
-    ? match.offered_pool.split(',')
-    : [...new Set(events.map((e) => e.map))].sort();
-  if (pool.length < minPool || drops.length === 0) {
-    skipped += 1;
+  // Un seul intrus suffit à disqualifier le match : un veto mêlant maps
+  // compétitives et cartes d'atelier ne décrit pas le même jeu.
+  if (pool.some((map) => !knownMaps.has(map))) {
+    offMap += 1;
     continue;
   }
 
@@ -112,6 +188,13 @@ for (const match of matches) {
       country_coverage: comp.coverage,
     };
   }
+
+  // Vécu de chaque équipe sur les maps du pool, arrêté à la veille du match.
+  const rosterOf = (faction) => players.filter((p) => p.faction === faction).map((p) => p.player_id);
+  const recordOf = {
+    faction1: teamMapRecord(rosterOf('faction1'), match.played_at ?? Infinity, pool),
+    faction2: teamMapRecord(rosterOf('faction2'), match.played_at ?? Infinity, pool),
+  };
 
   const date = match.played_at ? new Date(match.played_at) : null;
   const context = {
@@ -155,6 +238,9 @@ for (const match of matches) {
         ...context,
         ...(banner && side[banner] ? prefix(side[banner], 'banner') : {}),
         ...(opponent && side[opponent] ? prefix(side[opponent], 'opponent') : {}),
+        // { map: [matchs joués, gagnés] } par équipe, antérieur au match
+        banner_record: banner ? recordOf[banner] : null,
+        opponent_record: opponent ? recordOf[opponent] : null,
       }),
     );
     remaining = remaining.filter((m) => m !== drop.map);
@@ -164,6 +250,14 @@ for (const match of matches) {
 writeFileSync(values.out, lines.join('\n') + (lines.length ? '\n' : ''));
 console.log(
   `${lines.length} décisions écrites dans ${values.out} ` +
-    `(${matches.length - skipped} matchs retenus, ${skipped} ignorés).`,
+    `(${eligible.length - skipped - offMap} matchs retenus sur ${matches.length}, ` +
+    `${skipped} sans veto exploitable, ${offMap} hors pool compétitif, ` +
+    `${matches.length - eligible.length} hors matchmaking officiel).`,
 );
+if (truncatedPools > 0) {
+  console.log(
+    `${truncatedPools} matchs avaient un champ offered_pool tronqué (il rétrécit avec les bans) : ` +
+      `le pool a été reconstitué depuis la séquence de veto.`,
+  );
+}
 db.close();

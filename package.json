@@ -2,7 +2,7 @@
   "name": "faceit-plus",
   "description": "Extension navigateur qui enrichit FACEIT",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -16,6 +16,9 @@
     "crawl:enrich": "node crawler/enrich.mjs",
     "crawl:stats": "node crawler/stats.mjs",
     "crawl:export": "node crawler/export.mjs",
+    "model:train": "node crawler/train.mjs",
+    "model:bench": "node crawler/benchmark.mjs",
+    "model:ceiling": "node crawler/ceiling.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

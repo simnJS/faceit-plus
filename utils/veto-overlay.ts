@@ -95,7 +95,7 @@ export interface VetoBadgeOptions {
   faction2: TeamMapStat | undefined;
   banRate: number | null | undefined;
   /** Map conseillée au ban (avec l'écart de winrate qui le justifie). */
-  banAdvice?: { delta: number } | null;
+  banAdvice?: { delta: number; fromModel?: boolean } | null;
   /** Probabilité (%) que cette map soit finalement jouée. */
   likelyPercent?: number | null;
   t: Translator;
@@ -182,9 +182,14 @@ export function createVetoBadge(options: VetoBadgeOptions): HTMLElement {
   };
 
   if (banAdvice) {
+    const delta = banAdvice.delta;
     advice(
-      t('veto.banAdvice'),
-      t('veto.banAdviceTooltip', { delta: Math.round(banAdvice.delta) }),
+      banAdvice.fromModel && delta >= 0.5
+        ? `${t('veto.banAdvice')} +${delta.toFixed(1)}`
+        : t('veto.banAdvice'),
+      banAdvice.fromModel
+        ? t('veto.banAdviceModel', { delta: delta.toFixed(1) })
+        : t('veto.banAdviceTooltip', { delta: Math.round(delta) }),
       '#FF5151',
       'rgba(255,81,81,.16)',
     );

@@ -17,6 +17,11 @@ Extension navigateur qui enrichit les salles de match FACEIT (CS2), sur Chrome e
 
 - **Winrate des deux équipes** sur chaque map, agrégé sur l'historique récent des joueurs.
 - **Probabilité de ban** de chaque map, calculée depuis l'historique de veto du capitaine adverse.
+- **Quelle map bannir**, recommandée par un modèle entraîné sur des dizaines de
+  milliers de vetos réels : pour chaque ban possible, il déroule la suite du veto
+  et retient celui qui maximise l'avantage attendu sur la map finale. La
+  recommandation se recalcule à chaque tour.
+- **Map la plus probable** à l'arrivée, calculée exactement plutôt qu'estimée.
 - Les tuiles bannies sont estompées au fil des tours.
 
 **Automatismes** (désactivés par défaut)
@@ -46,6 +51,23 @@ npm run build        # build de production Chrome
 npm run build:firefox
 npm run zip          # archive prête pour les stores
 ```
+
+## Le modèle de veto
+
+Les poids sont entraînés hors ligne (voir [`crawler/`](crawler/)) puis **embarqués
+dans l'extension** — quelques kilo-octets. Aucun serveur, aucune latence, aucune
+donnée qui sort du navigateur : la prédiction tourne entièrement chez vous.
+
+Mesuré sur des matchs postérieurs à l'entraînement, jamais vus :
+
+| | modèle | meilleure règle simple | hasard |
+| --- | --- | --- | --- |
+| prochain ban | ~55 % | ~33 % | ~27 % |
+| map finalement jouée | ~34 % | ~26 % | ~15 % |
+
+La découpe est temporelle et en trois jeux : entraînement, validation pour le
+choix de l'époque, et un jeu de test consulté une seule fois — sans quoi le
+chiffre publié serait le meilleur de vingt tirages plutôt qu'une mesure honnête.
 
 ## Sources de données
 

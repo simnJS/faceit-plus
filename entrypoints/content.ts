@@ -70,6 +70,7 @@ export default defineContentScript({
     // Stats d'équipe par map (pour les overlays de veto)
     let teamStats: { f1: Map<string, TeamMapStat>; f2: Map<string, TeamMapStat> } | null = null;
     let banRateByMapId: Map<string, number> | null = null;
+    let banRateCounts: Record<string, { drops: number; opportunities: number }> | null = null;
     let selfFaction: 'faction1' | 'faction2' | null = null;
 
     // Réglages : chargés au démarrage, mis à jour en direct depuis le panneau.
@@ -227,16 +228,27 @@ export default defineContentScript({
       // Conseil de ban + map probable, recalculés à chaque évolution du veto.
       let adviceMapId: string | null = null;
       let adviceDelta = 0;
+      let adviceFromModel = false;
       let likelyByMapId: Map<string, number> | null = null;
       const activePool = fullPool.filter((m) => activeIds.has(m.id));
       if (settings.vetoAdvice && activePool.length > 1) {
-        const context = { pool: activePool, mine, theirs, banRates: banRateByMapId };
+        // Un bouton de ban actif signifie que FACEIT attend notre capitaine.
+        const ourTurn = findVetoCards().some((c) => !isCardBanned(c));
+        const context = {
+          pool: activePool,
+          mine,
+          theirs,
+          banRates: banRateByMapId,
+          captainCounts: banRateCounts,
+          ourTurn,
+        };
         const reco = recommendBan(context);
         if (reco) {
           adviceMapId = reco.mapId;
-          adviceDelta = reco.advantage;
+          adviceDelta = reco.gain ?? reco.advantage;
+          adviceFromModel = reco.fromModel;
         }
-        likelyByMapId = predictFinalMap(context);
+        likelyByMapId = predictFinalMap(context, ourTurn);
       }
       // On ne signale que la map la plus probable, et seulement si elle se détache.
       let likelyMapId: string | null = null;
@@ -251,7 +263,8 @@ export default defineContentScript({
         if (!mapId) continue;
 
         const banRate = banRateByMapId?.get(mapId) ?? null;
-        const banAdvice = mapId === adviceMapId ? { delta: adviceDelta } : null;
+        const banAdvice =
+          mapId === adviceMapId ? { delta: adviceDelta, fromModel: adviceFromModel } : null;
         const likelyPercent = mapId === likelyMapId ? (likelyByMapId?.get(mapId) ?? null) : null;
         // Signature : le badge est refait dès qu'une des valeurs affichées change.
         const signature = [
@@ -385,6 +398,7 @@ export default defineContentScript({
           );
           if (currentRoomId !== matchId || !rates) return;
           banRateByMapId = new Map(Object.entries(rates.probByMap));
+          banRateCounts = rates.counts;
           console.log(
             `[FACEIT+] ban rate prêt (${rates.datasetSize} matchs de capitaine analysés)`,
           );
@@ -468,6 +482,7 @@ export default defineContentScript({
         activeIds = new Set();
         teamStats = null;
         banRateByMapId = null;
+        banRateCounts = null;
         selfFaction = null;
       } else if (matchId !== currentRoomId) {
         void enterRoom(matchId);

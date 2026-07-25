@@ -22,7 +22,8 @@ const { values } = parseArgs({
     seed: { type: 'string', multiple: true, default: [] },
     'max-matches': { type: 'string', default: '2000' },
     'max-depth': { type: 'string', default: '4' },
-    'per-player': { type: 'string', default: '30' },
+    'per-player': { type: 'string', default: '80' },
+    strategy: { type: 'string', default: 'depth' },
     rps: { type: 'string', default: '18' },
     'veto-rps': { type: 'string', default: '35' },
     concurrency: { type: 'string', default: '10' },
@@ -40,7 +41,12 @@ Crawler FACEIT — constitue une base de vetos pour entraîner un modèle.
   --seed <pseudo>      point de départ (répétable). Inutile si la base est déjà amorcée.
   --max-matches <n>    nombre de matchs à ajouter avant de s'arrêter (défaut 2000)
   --max-depth <n>      profondeur maximale depuis les graines (défaut 4)
-  --per-player <n>     matchs récupérés par joueur (défaut 30, max 100)
+  --per-player <n>     matchs récupérés par joueur (défaut 80, max 100)
+  --strategy <mode>    depth (défaut) : densifie autour des joueurs déjà croisés
+                       breadth : s'éloigne vite des graines, couverture plus large
+
+  La profondeur compte davantage que le volume : un capitaine vu trois fois
+  n'apprend rien au modèle, il en faut plusieurs dizaines.
   --rps <n>            plafond sur l'API officielle (défaut 18)
   --veto-rps <n>       plafond sur l'endpoint de veto (défaut 35)
   --concurrency <n>    matchs traités en parallèle (défaut 10)
@@ -187,7 +193,7 @@ console.log(
 );
 
 while (added < maxMatches && !stopping) {
-  const [next] = db.nextPlayers(1);
+  const [next] = db.nextPlayers(1, values.strategy);
   if (!next) {
     console.log('File vide — ajoute une graine avec --seed.');
     break;
