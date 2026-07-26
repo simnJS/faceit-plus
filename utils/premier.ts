@@ -1,69 +1,65 @@
-// Récupération du rank CS2 Premier (« CS Rating ») d'un joueur FACEIT.
+// Fetches a FACEIT player's CS2 Premier rank ("CS Rating").
 //
-// ─────────────────────────────────────────────────────────────────────────────
-// SOURCES DE DONNÉES (aucune clé API — chaîne de fallback pour maximiser la couverture)
-// ─────────────────────────────────────────────────────────────────────────────
-// FACEIT ne stocke PAS le rating Premier CS2 (classement officiel de Valve, séparé de
-// l'ELO FACEIT) et Valve n'expose aucune API publique. On le reconstitue en deux temps :
+// Data sources (no API key — a fallback chain to maximize coverage):
+// FACEIT does NOT store the CS2 Premier rating (Valve's official ranking, separate from
+// FACEIT ELO) and Valve exposes no public API. We reconstruct it in two steps:
 //
-// 1) SteamID64 du joueur, via l'API interne FACEIT (cookies same-origin, endpoint ouvert) :
+// 1) The player's SteamID64, via the internal FACEIT API (same-origin cookies, open endpoint):
 //      GET https://www.faceit.com/api/users/v1/nicknames/{nickname}
-//      → payload.games.cs2.game_id    = SteamID64  (ex. "76561198010511021")
-//      → payload.platforms.steam.id64 = SteamID64  (fallback identique)
+//      -> payload.games.cs2.game_id    = SteamID64  (e.g. "76561198010511021")
+//      -> payload.platforms.steam.id64 = SteamID64  (identical fallback)
 //
-// 2) Rating Premier, par une CHAÎNE DE FALLBACK (source la plus large d'abord) :
+// 2) The Premier rating, via a fallback chain (widest source first):
 //
-//    a) csstats.gg  — SOURCE PRINCIPALE, couverture LARGE.
-//       Page HTML : GET https://csstats.gg/player/{steam64}
-//       Le rating Premier de la saison courante (ou de la plus récente saison jouée) est
-//       rendu côté serveur dans la pastille `.cs2rating` du slot courant `<div class="rank">`.
-//       On l'extrait par regex (pas de DOMParser dans un service worker MV3).
-//       • Couvre des joueurs absents de Leetify (dont le compte de test simnJS_ →  24 893).
-//       ⚠ CORS : csstats NE renvoie PAS `Access-Control-Allow-Origin`. Le fetch est donc
-//         fait DEPUIS LE SERVICE WORKER (background) qui, grâce aux host_permissions, n'est
-//         pas soumis au CORS. Le content script passe par un message runtime (voir plus bas).
-//         → REQUIS dans wxt.config.ts : ajouter 'https://csstats.gg/*' aux host_permissions.
-//       ⚠ Cloudflare : csstats est derrière Cloudflare Bot Management. Depuis le vrai
-//         navigateur de l'utilisateur (IP résidentielle + UA Chrome réel, cookie __cf_bm via
-//         `credentials:'include'`) le fetch passe en général ; il peut néanmoins être
-//         challengé (HTTP 403 / `cf-mitigated: challenge`) → on retombe alors sur Leetify.
-//         Les requêtes sont sérialisées côté background pour limiter le rate-limit.
+//    a) csstats.gg — PRIMARY source, WIDE coverage.
+//       HTML page: GET https://csstats.gg/player/{steam64}
+//       The current season's Premier rating (or the most recently played season) is
+//       server-rendered in the `.cs2rating` badge of the current slot's `<div class="rank">`.
+//       Extracted via regex (no DOMParser available in an MV3 service worker).
+//       - Covers players absent from Leetify (e.g. test account simnJS_ -> 24,893).
+//       CORS: csstats does NOT send `Access-Control-Allow-Origin`. The fetch must therefore
+//       run FROM THE SERVICE WORKER (background), which host_permissions exempt from CORS.
+//       The content script relays through a runtime message (see below).
+//       -> REQUIRED in wxt.config.ts: add 'https://csstats.gg/*' to host_permissions.
+//       Cloudflare: csstats sits behind Cloudflare Bot Management. From the user's real
+//       browser (residential IP + real Chrome UA, __cf_bm cookie via `credentials:'include'`)
+//       the fetch usually goes through, but it can still be challenged (HTTP 403 /
+//       `cf-mitigated: challenge`) -> we then fall back to Leetify. Requests are serialized
+//       on the background side to avoid tripping the rate limit.
 //
-//    b) Leetify — SECOURS, couverture ÉTROITE (uniquement ses propres utilisateurs).
-//       API publique, CORS ouvert (`Access-Control-Allow-Origin: *`), fetch direct possible :
+//    b) Leetify — FALLBACK, NARROW coverage (only its own users).
+//       Public API, open CORS (`Access-Control-Allow-Origin: *`), direct fetch possible:
 //       GET https://api-public.cs-prod.leetify.com/v3/profile?steam64_id={steam64}
-//       → ranks.premier = rating Premier CS2 (nombre) | null (pas de Premier public) | 404.
+//       -> ranks.premier = CS2 Premier rating (number) | null (no public Premier) | 404.
 //
-// Aucune source n'a 100 % de couverture : le Premier n'apparaît que pour les joueurs dont les
-// matchs sont connus (partage Steam / présence sur csstats) ou liés à Leetify. Un joueur sans
-// donnée renvoie `rating: null` (mis en cache pour ne pas re-solliciter les APIs).
+// No source has 100% coverage: Premier only shows up for players whose matches are known
+// (Steam sharing / presence on csstats) or linked to Leetify. A player with no data
+// resolves to `rating: null` (also cached, to avoid re-hitting the APIs).
 //
-// ─────────────────────────────────────────────────────────────────────────────
-// PONT BACKGROUND (obligatoire pour csstats à cause du CORS)
-// ─────────────────────────────────────────────────────────────────────────────
-// entrypoints/background.ts DOIT appeler registerPremierBackground() une fois au démarrage :
+// Background bridge (required for csstats because of CORS):
+// entrypoints/background.ts MUST call registerPremierBackground() once at startup:
 //     import { registerPremierBackground } from '@/utils/premier';
 //     export default defineBackground(() => { registerPremierBackground(); /* ... */ });
-// Le content script (resolvePremierRatings → fetchPremierRating) envoie alors un message
-// runtime que le background exécute (fetch csstats + parsing) et dont il renvoie le rating.
+// The content script (resolvePremierRatings -> fetchPremierRating) then sends a runtime
+// message that the background executes (fetch csstats + parsing) and replies with the rating.
 
 export interface PremierInfo {
-  /** Rating Premier CS2, ou null si indisponible (profil privé / pas de données). */
+  /** CS2 Premier rating, or null if unavailable (private profile / no data). */
   rating: number | null;
-  /** SteamID64 résolu, ou null si le joueur n'a pas de compte Steam lié côté FACEIT. */
+  /** Resolved SteamID64, or null if the player has no Steam account linked on FACEIT. */
   steam64: string | null;
 }
 
 interface CacheEntry {
-  r: number | null; // rating premier
+  r: number | null; // premier rating
   s: string | null; // steam64
-  t: number;        // timestamp d'écriture
+  t: number;        // write timestamp
 }
 
 const CACHE_KEY = 'faceitplus:premierCache';
-const TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+const TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-/** Type du message runtime content → background pour un fetch csstats. */
+/** Runtime message type sent from the content script to the background for a csstats fetch. */
 const CSSTATS_MSG = 'faceitplus:csstats-premier';
 interface CsstatsMsg {
   type: typeof CSSTATS_MSG;
@@ -73,7 +69,7 @@ interface CsstatsReply {
   rating: number | null;
 }
 
-/** SteamID64 (17 chiffres) d'un pseudo FACEIT, via l'API interne FACEIT, ou null. */
+/** SteamID64 (17 digits) for a FACEIT nickname, via the internal FACEIT API, or null. */
 export async function fetchSteam64(nickname: string): Promise<string | null> {
   const res = await fetch(
     `https://www.faceit.com/api/users/v1/nicknames/${encodeURIComponent(nickname)}`,
@@ -85,18 +81,14 @@ export async function fetchSteam64(nickname: string): Promise<string | null> {
   return typeof id === 'string' && /^\d{17}$/.test(id) ? id : null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// csstats.gg (source principale) — extraction + fetch background
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Extrait le rating Premier CS2 courant depuis le HTML d'une page joueur csstats.gg.
+ * Extracts the current CS2 Premier rating from a csstats.gg player page's HTML.
  *
- * Structure ciblée (rendue côté serveur, une par saison jouée, la plus récente en tête) :
+ * Targeted structure (server-rendered, one per season played, most recent first):
  *   <div class="rank"><div class="cs2rating <tier> sm" ...><span>24<small>,893</small></span></div></div>
- * `<div class="rank">` = rating de la saison (slot « courant ») ; `<div class="best">` = pic
- * (ignoré). On prend le premier slot courant NON vide (les saisons non calibrées affichent
- * « --- » → span sans chiffre, sautée). Pas de DOMParser en service worker MV3 → regex.
+ * `<div class="rank">` = current season slot's rating; `<div class="best">` = peak (ignored).
+ * We take the first non-empty current slot (uncalibrated seasons show "---", i.e. a span
+ * with no digits, which gets skipped). No DOMParser in an MV3 service worker -> regex.
  */
 export function parseCsstatsPremier(html: string): number | null {
   const re =
@@ -110,42 +102,43 @@ export function parseCsstatsPremier(html: string): number | null {
 }
 
 /**
- * Fetch + parsing du rating Premier via csstats.gg.
- * ⚠ À N'APPELER QUE DEPUIS LE BACKGROUND : csstats ne renvoie pas d'ACAO, seul le service
- * worker (host_permissions 'https://csstats.gg/*') peut lire la réponse sans blocage CORS.
+ * Fetches and parses the Premier rating from csstats.gg.
+ * Only call this from the background: csstats does not send ACAO, so only the service
+ * worker (host_permissions 'https://csstats.gg/*') can read the response without CORS
+ * blocking it.
  */
 async function fetchCsstatsPremierDirect(steam64: string): Promise<number | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
     const res = await fetch(`https://csstats.gg/player/${encodeURIComponent(steam64)}`, {
-      credentials: 'include', // laisse passer le cookie __cf_bm si l'utilisateur a déjà visité csstats
+      credentials: 'include', // lets the __cf_bm cookie through if the user already visited csstats
       headers: { Accept: 'text/html' },
       signal: controller.signal,
     });
-    // Challenge Cloudflare (403 / interstitiel) ou 404 → on abandonne csstats.
+    // Cloudflare challenge (403 / interstitial) or 404 -> give up on csstats.
     if (!res.ok || res.headers.get('cf-mitigated') === 'challenge') return null;
     return parseCsstatsPremier(await res.text());
   } catch {
-    return null; // réseau, timeout, abort…
+    return null; // network error, timeout, abort...
   } finally {
     clearTimeout(timeout);
   }
 }
 
-// Sérialisation des requêtes csstats (une room = ~10 joueurs) pour ménager Cloudflare :
-// on enchaîne les fetch au lieu de les lancer en rafale.
+// Serialize csstats requests (one room = ~10 players) to go easy on Cloudflare:
+// chain the fetches instead of firing them all at once.
 let csstatsChain: Promise<unknown> = Promise.resolve();
 function queueCsstatsFetch(steam64: string): Promise<number | null> {
   const run = csstatsChain.then(() => fetchCsstatsPremierDirect(steam64));
-  csstatsChain = run.catch(() => undefined); // ne jamais casser la file
+  csstatsChain = run.catch(() => undefined); // never break the chain
   return run;
 }
 
 /**
- * Enregistre le pont background pour csstats. À appeler UNE FOIS depuis
- * entrypoints/background.ts (dans defineBackground). Coexiste avec d'autres listeners
- * onMessage : ne renvoie une réponse que pour les messages csstats.
+ * Registers the background bridge for csstats. Call this ONCE from
+ * entrypoints/background.ts (inside defineBackground). Coexists with other onMessage
+ * listeners: only responds to csstats messages.
  */
 export function registerPremierBackground(): void {
   browser.runtime.onMessage.addListener((message: Partial<CsstatsMsg>) => {
@@ -154,12 +147,12 @@ export function registerPremierBackground(): void {
         (rating): CsstatsReply => ({ rating }),
       );
     }
-    // Autres messages : ne rien renvoyer (laisse les autres listeners répondre).
+    // Other messages: don't respond (let other listeners handle them).
     return undefined;
   });
 }
 
-/** Demande au background de résoudre le Premier via csstats (bypass CORS). */
+/** Asks the background to resolve the Premier rating via csstats (bypasses CORS). */
 async function fetchCsstatsPremierViaBackground(steam64: string): Promise<number | null> {
   try {
     const msg: CsstatsMsg = { type: CSSTATS_MSG, steam64 };
@@ -167,21 +160,17 @@ async function fetchCsstatsPremierViaBackground(steam64: string): Promise<number
     const r = reply?.rating;
     return typeof r === 'number' && r > 0 ? r : null;
   } catch {
-    return null; // pont non enregistré / service worker indisponible → fallback
+    return null; // bridge not registered / service worker unavailable -> fallback
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Leetify (secours) — fetch direct (CORS ouvert)
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchLeetifyPremier(steam64: string): Promise<number | null> {
   try {
     const url = `https://api-public.cs-prod.leetify.com/v3/profile?steam64_id=${encodeURIComponent(
       steam64,
     )}`;
-    const res = await fetch(url); // GET simple, ACAO:* → pas de préflight, direct depuis le content
-    if (!res.ok) return null; // 404 = pas de profil Leetify
+    const res = await fetch(url); // simple GET, ACAO:* -> no preflight, fetched directly from the content script
+    if (!res.ok) return null; // 404 = no Leetify profile
     const json = await res.json();
     const premier = json?.ranks?.premier;
     return typeof premier === 'number' && premier > 0 ? premier : null;
@@ -191,9 +180,9 @@ async function fetchLeetifyPremier(steam64: string): Promise<number | null> {
 }
 
 /**
- * Rating Premier CS2 pour un SteamID64, via la chaîne csstats (large) → Leetify (secours).
- * Signature publique inchangée (Promise<number | null>). Appelé depuis le content script :
- * csstats passe par le background, Leetify est fetché directement.
+ * CS2 Premier rating for a SteamID64, via the csstats (wide) -> Leetify (fallback) chain.
+ * Called from the content script: csstats goes through the background, Leetify is
+ * fetched directly.
  */
 export async function fetchPremierRating(steam64: string): Promise<number | null> {
   const fromCsstats = await fetchCsstatsPremierViaBackground(steam64);
@@ -201,7 +190,7 @@ export async function fetchPremierRating(steam64: string): Promise<number | null
   return fetchLeetifyPremier(steam64);
 }
 
-/** Résout SteamID64 puis rating Premier pour un pseudo. */
+/** Resolves the SteamID64 then the Premier rating for a nickname. */
 async function resolveOne(nickname: string): Promise<PremierInfo> {
   const steam64 = await fetchSteam64(nickname);
   if (!steam64) return { rating: null, steam64: null };
@@ -210,13 +199,16 @@ async function resolveOne(nickname: string): Promise<PremierInfo> {
 }
 
 /**
- * Résout le rating Premier de chaque pseudo, via storage.local en cache (TTL 6 h)
- * puis les APIs FACEIT + csstats/Leetify pour les manquants.
+ * Resolves the Premier rating for each nickname, via storage.local caching (6h TTL)
+ * then the FACEIT + csstats/Leetify APIs for the missing ones.
  *
- * Modelé sur resolveCountries() (utils/country-cache.ts) : à appeler une fois à
- * l'entrée de la room, puis lire la Map par pseudo lors de l'injection des badges.
- * Les résultats null (pas de Premier public) sont aussi mis en cache pour éviter de
- * re-solliciter les APIs à chaque frame / navigation.
+ * Modeled after resolveCountries() (utils/country-cache.ts): call once when entering
+ * the room, then read the Map by nickname when injecting badges. Null results (no
+ * public Premier) are also cached, to avoid re-hitting the APIs on every frame/navigation.
+ *
+ * Since csstats fetches are serialized on the background side, a large enough batch
+ * takes several seconds to fully resolve: `onResolved` is called as soon as each player
+ * is known, so results can be displayed as they come in instead of all at once.
  *
  * @example
  *   const premierByNickname = await resolvePremierRatings(roster.map(p => p.nickname));
@@ -224,6 +216,7 @@ async function resolveOne(nickname: string): Promise<PremierInfo> {
  */
 export async function resolvePremierRatings(
   nicknames: string[],
+  onResolved?: (nickname: string, info: PremierInfo) => void,
 ): Promise<Map<string, PremierInfo>> {
   const stored = ((await browser.storage.local.get(CACHE_KEY))[CACHE_KEY] ??
     {}) as Record<string, CacheEntry>;
@@ -234,14 +227,20 @@ export async function resolvePremierRatings(
   for (const nickname of nicknames) {
     const hit = stored[nickname];
     if (hit && now - hit.t < TTL_MS) {
-      result.set(nickname, { rating: hit.r, steam64: hit.s });
+      const info = { rating: hit.r, steam64: hit.s };
+      result.set(nickname, info);
+      onResolved?.(nickname, info);
     } else {
       missing.push(nickname);
     }
   }
 
   const fetched = await Promise.allSettled(
-    missing.map(async (nickname) => [nickname, await resolveOne(nickname)] as const),
+    missing.map(async (nickname) => {
+      const info = await resolveOne(nickname);
+      onResolved?.(nickname, info);
+      return [nickname, info] as const;
+    }),
   );
 
   let dirty = false;

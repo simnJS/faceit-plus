@@ -1,6 +1,6 @@
-// Banc d'essai : on rejoue de VRAIS vetos que le modèle n'a jamais vus, sans lui
-// dire ce qui a été banni. À chaque tour on affiche sa prédiction, puis la
-// réalité. On lui demande aussi, avant le moindre ban, quelle map sera jouée.
+// Benchmark: replays REAL vetos the model has never seen, without telling it
+// what was banned. At each round we show its prediction, then reality.
+// We also ask it, before any ban, which map will be played.
 //
 //   npm run model:bench
 //   npm run model:bench -- --scenarios 5 --epochs 40
@@ -32,20 +32,19 @@ const rows = readFileSync(values.data, 'utf8')
 
 const split = temporalSplit(rows, [0.7, 0.15]);
 if (split.testMatches.length === 0) {
-  console.error('Pas assez de matchs pour constituer un jeu de test.');
+  console.error('Not enough matches to build a test set.');
   process.exit(1);
 }
 
 console.log(
-  `Entraînement sur ${split.trainMatches.length} matchs, scénarios tirés des ` +
-    `${split.testMatches.length} matchs de test, jamais vus ni pour l'entraînement ni pour le réglage.\n`,
+  `Training on ${split.trainMatches.length} matches, scenarios drawn from the ` +
+    `${split.testMatches.length} test matches, never seen during training or tuning.\n`,
 );
 const model = train(split.train, { epochs: Number(values.epochs) });
 
 const short = (map) => map.replace(/^de_/, '');
 const bar = (p) => '█'.repeat(Math.round(p * 20)).padEnd(20, '·');
 
-// ── Scénarios détaillés ────────────────────────────────────────────────────
 const scenarios = split.testMatches.slice(0, Number(values.scenarios));
 
 for (const [matchId, decisions] of scenarios) {
@@ -53,18 +52,18 @@ for (const [matchId, decisions] of scenarios) {
   const truthFinal = decisions[0].final_map;
 
   console.log('─'.repeat(72));
-  console.log(`Match ${matchId.slice(0, 18)}…  |  ${decisions[0].region}  |  pool de ${pool.length} maps`);
-  console.log(`  niveau ${decisions[0].banner_skill_avg ?? '?'} contre ${decisions[0].opponent_skill_avg ?? '?'}`);
+  console.log(`Match ${matchId.slice(0, 18)}…  |  ${decisions[0].region}  |  pool of ${pool.length} maps`);
+  console.log(`  level ${decisions[0].banner_skill_avg ?? '?'} vs ${decisions[0].opponent_skill_avg ?? '?'}`);
 
-  // Prédiction « à l'aveugle », avant le premier ban.
+  // Blind prediction, before the first ban.
   const upfront = finalMapDistribution(model, decisions);
   const ranked = [...upfront.entries()].sort((a, b) => b[1] - a[1]);
-  console.log('\n  Avant le veto — map qui sera jouée, selon le modèle :');
+  console.log('\n  Before the veto — map that will be played, according to the model:');
   for (const [map, p] of ranked.slice(0, 3)) {
     console.log(`    ${short(map).padEnd(9)} ${bar(p)} ${(p * 100).toFixed(0).padStart(3)} %`);
   }
 
-  console.log('\n  Déroulé tour par tour :');
+  console.log('\n  Round-by-round breakdown:');
   let remaining = [...pool];
   let hits = 0;
   for (const decision of decisions) {
@@ -81,41 +80,40 @@ for (const [matchId, decisions] of scenarios) {
       .map((d) => `${short(d.map)} ${(d.p * 100).toFixed(0)}%`)
       .join('  ');
     console.log(
-      `    tour ${decision.step + 1} (${decision.banning_faction === 'faction1' ? 'équipe 1' : 'équipe 2'}) ` +
-        `prédit : ${top}`,
+      `    round ${decision.step + 1} (${decision.banning_faction === 'faction1' ? 'team 1' : 'team 2'}) ` +
+        `predicted: ${top}`,
     );
     console.log(
-      `             réel : ${short(actual).padEnd(9)} ${correct ? '✓ trouvé' : `✗ (classé ${rank}ᵉ)`}`,
+      `             actual: ${short(actual).padEnd(9)} ${correct ? '✓ found' : `✗ (rank ${rank})`}`,
     );
     remaining = remaining.filter((m) => m !== actual);
   }
 
   const predictedFinal = ranked[0]?.[0];
   console.log(
-    `\n  Map jouée : ${short(truthFinal ?? '?')} — annoncée ${short(predictedFinal ?? '?')} ` +
-      `${predictedFinal === truthFinal ? '✓' : '✗'}  |  bans trouvés : ${hits}/${decisions.length}`,
+    `\n  Map played: ${short(truthFinal ?? '?')} — predicted ${short(predictedFinal ?? '?')} ` +
+      `${predictedFinal === truthFinal ? '✓' : '✗'}  |  bans found: ${hits}/${decisions.length}`,
   );
 }
 
-// ── Bilan chiffré ──────────────────────────────────────────────────────────
 const trainStats = buildStats(split.train, collectMaps(rows));
 const ref = baselines(split.test, split.testMatches, trainStats);
 const next = nextBanAccuracy(model, split.test);
 const final = finalMapAccuracy(model, split.testMatches);
 
 console.log('\n' + '═'.repeat(72));
-console.log(`Bilan sur ${split.testMatches.length} matchs jamais vus\n`);
+console.log(`Summary over ${split.testMatches.length} matches never seen before\n`);
 const line = (label, value, refs) =>
-  console.log(`  ${label.padEnd(16)} ${(value * 100).toFixed(1).padStart(5)} %   contre ${refs}`);
+  console.log(`  ${label.padEnd(16)} ${(value * 100).toFixed(1).padStart(5)} %   vs ${refs}`);
 line(
-  'prochain ban',
+  'next ban',
   next.accuracy,
-  `hasard ${(ref.nextBan.random * 100).toFixed(1)} % · fréquence ${(ref.nextBan.frequency * 100).toFixed(1)} %`,
+  `random ${(ref.nextBan.random * 100).toFixed(1)} % · frequency ${(ref.nextBan.frequency * 100).toFixed(1)} %`,
 );
 line(
-  'map finale',
+  'final map',
   final.accuracy,
-  `hasard ${(ref.finalMap.random * 100).toFixed(1)} % · moins bannie ${(ref.finalMap.frequency * 100).toFixed(1)} %`,
+  `random ${(ref.finalMap.random * 100).toFixed(1)} % · least banned ${(ref.finalMap.frequency * 100).toFixed(1)} %`,
 );
-console.log(`\n  perte logarithmique : ${next.logLoss.toFixed(4)} (plus bas = mieux calibré)`);
-console.log(`  décisions évaluées  : ${next.total}`);
+console.log(`\n  log loss           : ${next.logLoss.toFixed(4)} (lower = better calibrated)`);
+console.log(`  decisions evaluated: ${next.total}`);

@@ -1,6 +1,6 @@
-// Stockage SQLite du crawler (module natif de Node, aucune dépendance).
-// La base porte aussi l'état d'avancement : un joueur dont `crawled_at` est nul
-// est encore dans la file. Le crawl est donc reprenable à tout moment.
+// SQLite storage for the crawler (Node's native module, no dependency).
+// The database also holds the progress state: a player whose `crawled_at`
+// is null is still in the queue. The crawl can therefore resume at any time.
 
 import { DatabaseSync } from 'node:sqlite';
 
@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS players (
   discovered_at INTEGER NOT NULL,
   crawled_at    INTEGER,
   depth         INTEGER NOT NULL DEFAULT 0,
-  -- Nombre de matchs connus où le joueur apparaît. Maintenu à l'insertion :
-  -- le recalculer par jointure à chaque tour rendait la file inutilisable.
+  -- Number of known matches the player appears in. Maintained on insert:
+  -- recomputing it via a join on every pass made the queue unusable.
   seen          INTEGER NOT NULL DEFAULT 0
 );
 
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS matches (
   started_at       INTEGER,
   finished_at      INTEGER,
   map_picked       TEXT,
-  offered_pool     TEXT,       -- maps proposées au vote, séparées par des virgules
+  offered_pool     TEXT,       -- maps offered for the vote, comma-separated
   winner           TEXT,
   score_faction1   INTEGER,
   score_faction2   INTEGER,
@@ -43,12 +43,12 @@ CREATE TABLE IF NOT EXISTS matches (
   has_veto         INTEGER NOT NULL DEFAULT 0
 );
 
--- Contexte par équipe : indices de premade (nom, type) et estimations FACEIT.
+-- Per-team context: premade hints (name, type) and FACEIT estimates.
 CREATE TABLE IF NOT EXISTS match_teams (
   match_id        TEXT NOT NULL,
   faction         TEXT NOT NULL,
   name            TEXT,
-  type            TEXT,        -- "lobby" (file d'attente) ou équipe constituée
+  type            TEXT,        -- "lobby" (matchmaking queue) or a formed team
   rating          REAL,
   win_probability REAL,
   skill_avg       REAL,
@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS veto_events (
 );
 `;
 
-// Les index sont créés APRÈS les migrations : certains portent sur des colonnes
-// ajoutées après coup, et les créer trop tôt échouerait sur une base existante.
+// Indexes are created AFTER the migrations: some cover columns added later,
+// and creating them too early would fail on an existing database.
 const INDEXES = `
 CREATE INDEX IF NOT EXISTS matches_veto ON matches(has_veto);
 CREATE INDEX IF NOT EXISTS match_players_player ON match_players(player_id);
@@ -88,8 +88,8 @@ CREATE INDEX IF NOT EXISTS players_queue ON players(crawled_at, depth);
 CREATE INDEX IF NOT EXISTS players_priority ON players(crawled_at, seen DESC);
 `;
 
-// Colonnes ajoutées après coup : `CREATE TABLE IF NOT EXISTS` ne les pose pas sur
-// une base existante, on les ajoute donc une par une si elles manquent.
+// Columns added later on: `CREATE TABLE IF NOT EXISTS` won't add them to an
+// existing database, so we add them one by one if they're missing.
 const MIGRATIONS = [
   ['matches', 'competition_id', 'TEXT'],
   ['matches', 'competition_name', 'TEXT'],
@@ -106,11 +106,11 @@ const MIGRATIONS = [
 ];
 
 export class CrawlDb {
-  /** @param {string} file chemin du fichier SQLite */
+  /** @param {string} file path to the SQLite database file */
   constructor(file) {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL');
-    // Sans risque en WAL, et bien plus rapide sur les écritures en volume.
+    // Safe under WAL mode, and much faster for high-volume writes.
     this.db.exec('PRAGMA synchronous = NORMAL');
     this.db.exec(SCHEMA);
     this.#migrate();
@@ -123,14 +123,14 @@ export class CrawlDb {
          ON CONFLICT(id) DO NOTHING`,
       ),
       markCrawled: this.db.prepare('UPDATE players SET crawled_at = ? WHERE id = ?'),
-      // En largeur : on s'éloigne vite des graines, la couverture s'étale.
+      // Breadth-first: moves away from the seeds quickly, spreading coverage.
       nextBreadth: this.db.prepare(
         'SELECT id, nickname, depth FROM players WHERE crawled_at IS NULL ORDER BY depth, discovered_at LIMIT ?',
       ),
-      // En profondeur : on traite d'abord les joueurs déjà croisés dans beaucoup
-      // de matchs connus. Leur historique densifie la base là où elle sert —
-      // sans quoi chaque capitaine reste vu deux ou trois fois et les variables
-      // d'habitude de veto n'ont aucune matière.
+      // Depth-first: processes players already seen in many known matches
+      // first. Their history densifies the database where it's useful —
+      // otherwise each captain stays seen two or three times and the veto
+      // habit variables have no substance to work with.
       nextDepth: this.db.prepare(
         `SELECT id, nickname, depth, seen FROM players
          WHERE crawled_at IS NULL ORDER BY seen DESC, depth LIMIT ?`,
@@ -163,7 +163,7 @@ export class CrawlDb {
     };
   }
 
-  /** Ajoute les colonnes manquantes sur une base créée par une version antérieure. */
+  /** Adds missing columns to a database created by an earlier version. */
   #migrate() {
     for (const [table, column, type] of MIGRATIONS) {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
@@ -172,18 +172,17 @@ export class CrawlDb {
       }
     }
 
-    // Le compteur `seen` vient d'être ajouté : on le remplit une fois à partir
-    // des participations déjà enregistrées (l'index rend l'opération rapide).
+    // The `seen` counter was just added: backfill it once from the
+    // participations already recorded (the index makes this fast).
     const needsBackfill =
       this.db.prepare('SELECT COUNT(1) AS n FROM players WHERE seen > 0').all()[0].n === 0 &&
       this.db.prepare('SELECT COUNT(1) AS n FROM match_players').all()[0].n > 0;
     if (needsBackfill) {
-      process.stdout.write('Initialisation du compteur de participations… ');
+      process.stdout.write('Initializing participation counter... ');
       const started = Date.now();
-      // Un seul regroupement puis une jointure, dans une transaction unique :
-      // la version en sous-requête corrélée écrivait ligne par ligne et prenait
-      // un temps déraisonnable sur une base de plusieurs dizaines de milliers
-      // de joueurs.
+      // A single group-by then a join, in one transaction: the correlated
+      // subquery version wrote row by row and took an unreasonable amount of
+      // time on a database with several tens of thousands of players.
       this.db.exec('BEGIN');
       this.db.exec(`
         UPDATE players SET seen = t.c
@@ -195,7 +194,7 @@ export class CrawlDb {
     }
   }
 
-  /** Ajoute un joueur à la file s'il est inconnu. */
+  /** Adds a player to the queue if not already known. */
   addPlayer({ id, nickname = null, country = null, level = null, elo = null, depth = 0 }) {
     if (!id) return;
     this.stmt.addPlayer.run(id, nickname, country, level, elo, Date.now(), depth);
@@ -215,7 +214,7 @@ export class CrawlDb {
     return this.stmt.hasMatch.all(id).length > 0;
   }
 
-  /** Enregistre un match, ses équipes, ses joueurs et son veto en une transaction. */
+  /** Saves a match, its teams, its players, and its veto in a single transaction. */
   saveMatch(match, players, vetoEvents, teams = []) {
     this.db.exec('BEGIN');
     try {
@@ -264,7 +263,7 @@ export class CrawlDb {
           p.level ?? null,
           p.elo ?? null,
         );
-        this.stmt.bumpSeen.run(p.id); // garde la file de priorité à jour
+        this.stmt.bumpSeen.run(p.id); // keeps the priority queue up to date
       }
       for (const [index, event] of (vetoEvents ?? []).entries()) {
         this.stmt.addVetoEvent.run(

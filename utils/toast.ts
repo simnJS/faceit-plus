@@ -1,6 +1,6 @@
-// Toasts in-page de FACEIT+ (coin bas-droit) : compte à rebours + bouton Annuler.
-// Utilisés par l'auto-accept et l'auto-veto pour laisser à l'utilisateur le temps
-// d'annuler une action automatique.
+// FACEIT+ in-page toasts (bottom-right corner): countdown + Cancel button.
+// Used by auto-accept and auto-veto to give the user time to cancel an
+// automatic action.
 
 const CONTAINER_ID = 'faceitplus-toasts';
 
@@ -12,7 +12,7 @@ function ensureContainer(): HTMLElement {
     container.style.cssText = [
       'position:fixed',
       'right:16px',
-      'bottom:70px', // au-dessus du bouton de config FACEIT+
+      'bottom:70px', // above the FACEIT+ config button
       'z-index:999999',
       'display:flex',
       'flex-direction:column',
@@ -30,7 +30,7 @@ export interface ToastHandle {
 
 export interface CountdownToastOptions {
   title: string;
-  /** Description en fonction des secondes restantes, ex. (s) => `Acceptation dans ${s}s…` */
+  /** Description based on the remaining seconds, e.g. (s) => `Accepting in ${s}s...` */
   description: (secondsLeft: number) => string;
   seconds: number;
   cancelLabel: string;
@@ -44,7 +44,7 @@ export function showCountdownToast(options: CountdownToastOptions): ToastHandle 
     'max-width:300px',
     'background:#141414',
     'border:1px solid #2c2c2c',
-    'border-left:3px solid #ff5500', // accent FACEIT
+    'border-left:3px solid #ff5500', // FACEIT accent color
     'border-radius:8px',
     'padding:10px 12px',
     'box-shadow:0 8px 30px rgba(0,0,0,.55)',

@@ -1,6 +1,6 @@
-// Panneau de configuration FACEIT+ : pastille flottante en bas à droite qui
-// ouvre un panneau de réglages dans la page. Les écritures passent par
-// saveSettings → le content script réagit en direct via watchSettings.
+// FACEIT+ config panel: floating button bottom-right that opens a settings
+// panel in the page. Writes go through saveSettings -> the content script
+// reacts live via watchSettings.
 
 import { CS2_MAP_POOL, prettyMapName } from './faceit-api';
 import { createTranslator, type LangSetting, type Translator } from './i18n';
@@ -64,7 +64,6 @@ const CSS = `
 }
 #${PANEL_ID} .fp-lbl{ flex:1; min-width:0; font-size:12px; font-weight:600; color:#e2e2e8 }
 
-/* Interrupteur */
 #${PANEL_ID} .fp-sw{ position:relative; flex:0 0 auto; width:30px; height:17px }
 #${PANEL_ID} .fp-sw input{ position:absolute; opacity:0; width:0; height:0 }
 #${PANEL_ID} .fp-sw i{
@@ -79,7 +78,6 @@ const CSS = `
 #${PANEL_ID} .fp-sw input:checked + i::after{ transform:translateX(13px); background:#ff5500 }
 #${PANEL_ID} .fp-sw input:focus-visible + i{ outline:2px solid #ff5500; outline-offset:2px }
 
-/* Curseur */
 #${PANEL_ID} .fp-slide{ padding:3px 0 6px }
 #${PANEL_ID} .fp-slide-h{ display:flex; align-items:baseline; margin-bottom:5px }
 #${PANEL_ID} .fp-slide-h b{ flex:1; font-size:12px; font-weight:600; color:#e2e2e8 }
@@ -98,7 +96,6 @@ const CSS = `
   width:12px; height:12px; border-radius:50%; background:#ff5500; border:2px solid #0e0e11; cursor:pointer;
 }
 
-/* Sélecteur segmenté */
 #${PANEL_ID} .fp-seg{ display:flex; gap:2px; padding:2px; background:#161619; border-radius:7px; margin:2px 0 4px }
 #${PANEL_ID} .fp-seg button{
   flex:1; padding:4px 3px; border:none; border-radius:5px; background:transparent; cursor:pointer;
@@ -108,7 +105,6 @@ const CSS = `
 #${PANEL_ID} .fp-seg button:hover{ color:#c9c9d2 }
 #${PANEL_ID} .fp-seg button[data-on="1"]{ background:rgba(255,85,0,.14); color:#ff7a33 }
 
-/* Liste ordonnée des maps */
 #${PANEL_ID} .fp-maps{ padding-top:2px }
 #${PANEL_ID} .fp-map{
   display:flex; align-items:center; gap:7px; padding:3px 6px; margin-bottom:2px;
@@ -188,7 +184,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
     void render(panel, close);
   };
 
-  // En-tête
   const head = el('div', 'fp-head');
   head.innerHTML = `<span class="fp-brand">FACEIT<i>+</i></span>`;
   const x = el('button', 'fp-x');
@@ -199,7 +194,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
   head.appendChild(x);
   panel.appendChild(head);
 
-  // Affichage
   const display = section(t('section.display'));
   display.append(
     toggle(t('display.flags'), settings.flags, (v) => update({ flags: v })),
@@ -212,7 +206,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
   );
   panel.appendChild(display);
 
-  // Auto-accept
   const accept = section(t('section.autoAccept'));
   accept.append(
     toggle(t('common.enable'), settings.autoAccept.enabled, (v) =>
@@ -228,7 +221,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
   }
   panel.appendChild(accept);
 
-  // Auto-veto
   const veto = section(t('section.autoVeto'));
   veto.append(
     toggle(t('common.enable'), settings.autoVeto.enabled, (v) =>
@@ -253,7 +245,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
   }
   panel.appendChild(veto);
 
-  // Langue
   const language = section(t('section.language'));
   language.appendChild(
     segmented(
@@ -268,8 +259,6 @@ async function render(panel: HTMLElement, close: () => void): Promise<void> {
   );
   panel.appendChild(language);
 }
-
-// ── Primitives ─────────────────────────────────────────────────────────────
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -352,7 +341,7 @@ function segmented(
   return wrap;
 }
 
-/** Liste ordonnée des maps à bannir (la 1re est bannie en premier). */
+/** Ordered list of maps to ban (the first entry is banned first). */
 function mapOrder(settings: Settings, update: (patch: Patch) => Promise<void>): HTMLElement {
   const wrap = el('div', 'fp-maps');
   const order = [

@@ -1,20 +1,20 @@
-// Crawler FACEIT en boule de neige : on part d'un joueur, on récupère ses matchs,
-// puis les joueurs rencontrés dans ces matchs deviennent à leur tour des graines.
-// La couverture s'étend d'elle-même à toutes les tranches d'elo.
+// FACEIT snowball crawler: start from a single player, fetch their matches,
+// then the players encountered in those matches become seeds in turn.
+// Coverage expands on its own across every skill bracket.
 //
 //   FACEIT_API_KEY=xxx node crawler/crawl.mjs --seed simnJS_ --max-matches 5000
 //
-// Le crawl est reprenable : relancer la commande continue là où on s'est arrêté.
+// The crawl is resumable: rerunning the command picks up where it left off.
 
 import { parseArgs } from 'node:util';
 import { FaceitClient, RateLimiter } from './lib/faceit.mjs';
 import { CrawlDb } from './lib/db.mjs';
 
-// Charge .env s'il existe (clé d'API, graine par défaut). Sans dépendance.
+// Load .env if present (API key, default seed). No dependency needed.
 try {
   process.loadEnvFile();
 } catch {
-  // pas de .env : on se rabat sur les variables d'environnement du shell
+  // no .env: fall back to the shell's environment variables
 }
 
 const { values } = parseArgs({
@@ -34,39 +34,39 @@ const { values } = parseArgs({
 
 if (values.help) {
   console.log(`
-Crawler FACEIT — constitue une base de vetos pour entraîner un modèle.
+FACEIT crawler — builds a veto database to train a model.
 
-  FACEIT_API_KEY=<clé> node crawler/crawl.mjs --seed <pseudo> [options]
+  FACEIT_API_KEY=<key> node crawler/crawl.mjs --seed <nickname> [options]
 
-  --seed <pseudo>      point de départ (répétable). Inutile si la base est déjà amorcée.
-  --max-matches <n>    nombre de matchs à ajouter avant de s'arrêter (défaut 2000)
-  --max-depth <n>      profondeur maximale depuis les graines (défaut 4)
-  --per-player <n>     matchs récupérés par joueur (défaut 80, max 100)
-  --strategy <mode>    depth (défaut) : densifie autour des joueurs déjà croisés
-                       breadth : s'éloigne vite des graines, couverture plus large
+  --seed <nickname>    starting point (repeatable). Not needed if the database is already seeded.
+  --max-matches <n>    number of matches to add before stopping (default 2000)
+  --max-depth <n>      maximum depth from the seeds (default 4)
+  --per-player <n>     matches fetched per player (default 80, max 100)
+  --strategy <mode>    depth (default): densifies around players already seen
+                       breadth: moves away from seeds faster, wider coverage
 
-  La profondeur compte davantage que le volume : un capitaine vu trois fois
-  n'apprend rien au modèle, il en faut plusieurs dizaines.
-  --rps <n>            plafond sur l'API officielle (défaut 18)
-  --veto-rps <n>       plafond sur l'endpoint de veto (défaut 35)
-  --concurrency <n>    matchs traités en parallèle (défaut 10)
+  Depth matters more than volume: a captain seen three times teaches the
+  model nothing, it takes several dozen.
+  --rps <n>            cap on the official API (default 18)
+  --veto-rps <n>       cap on the veto endpoint (default 35)
+  --concurrency <n>    matches processed in parallel (default 10)
 
-  L'API annonce sa limite dans ses en-têtes : « ratelimit-limit: 20, 20;w=1 »,
-  soit 20 requêtes par seconde. La valeur par défaut reste juste en dessous.
-  --db <fichier>       base SQLite (défaut crawler/faceit.db)
+  The API advertises its limit in its headers: "ratelimit-limit: 20, 20;w=1",
+  i.e. 20 requests per second. The default stays just under that.
+  --db <file>          SQLite database (default crawler/faceit.db)
 
-Clé d'API gratuite : https://developers.faceit.com → application → API key (server side).
+Free API key: https://developers.faceit.com → application → API key (server side).
 `);
   process.exit(0);
 }
 
 const apiKey = process.env.FACEIT_API_KEY;
 if (!apiKey) {
-  console.error('FACEIT_API_KEY manquante : renseigne-la dans .env (voir .env.example).');
+  console.error('Missing FACEIT_API_KEY: set it in .env (see .env.example).');
   process.exit(1);
 }
 
-// Graine : --seed prioritaire, sinon FACEIT_SEED du .env.
+// Seed: --seed takes priority, otherwise FACEIT_SEED from .env.
 const seeds = values.seed.length > 0 ? values.seed : [process.env.FACEIT_SEED].filter(Boolean);
 
 const maxMatches = Number(values['max-matches']);
@@ -84,13 +84,13 @@ const client = new FaceitClient({
 
 let stopping = false;
 process.on('SIGINT', () => {
-  console.log('\nArrêt demandé : on termine le joueur en cours…');
+  console.log('\nStop requested: finishing the current player…');
   stopping = true;
 });
 
 /**
- * Transforme la réponse de l'API officielle en lignes prêtes pour la base.
- * `historyItem` complète les champs que le détail de match n'expose pas toujours.
+ * Turns the official API response into rows ready for the database.
+ * `historyItem` fills in fields that the match details don't always expose.
  */
 function extractMatch(details, historyItem = {}) {
   const factions = details?.teams ?? {};
@@ -110,8 +110,8 @@ function extractMatch(details, historyItem = {}) {
         isLeader: p.player_id === leaderId,
       });
     }
-    // `stats` porte l'estimation FACEIT : probabilité de victoire, rating
-    // d'équipe et étendue des niveaux (indice d'hétérogénéité du lobby).
+    // `stats` carries FACEIT's estimate: win probability, team rating, and
+    // the skill-level range (an indicator of lobby heterogeneity).
     const stats = team?.stats ?? {};
     teams.push({
       faction,
@@ -168,11 +168,10 @@ function extractVeto(entities) {
   }));
 }
 
-// Amorçage
 for (const nickname of seeds) {
   const player = await client.playerByNickname(nickname);
   if (!player?.player_id) {
-    console.error(`Graine introuvable : ${nickname}`);
+    console.error(`Seed not found: ${nickname}`);
     continue;
   }
   db.addPlayer({
@@ -183,19 +182,19 @@ for (const nickname of seeds) {
     elo: player.games?.cs2?.faceit_elo ?? null,
     depth: 0,
   });
-  console.log(`Graine : ${player.nickname}`);
+  console.log(`Seed: ${player.nickname}`);
 }
 
 let added = 0;
 const startStats = db.stats();
 console.log(
-  `Base : ${startStats.matches} matchs (${startStats.withVeto} avec veto), ${startStats.players} joueurs, ${startStats.pending} en attente.\n`,
+  `Database: ${startStats.matches} matches (${startStats.withVeto} with veto), ${startStats.players} players, ${startStats.pending} pending.\n`,
 );
 
 while (added < maxMatches && !stopping) {
   const [next] = db.nextPlayers(1, values.strategy);
   if (!next) {
-    console.log('File vide — ajoute une graine avec --seed.');
+    console.log('Queue empty — add a seed with --seed.');
     break;
   }
   if (next.depth > maxDepth) {
@@ -206,8 +205,8 @@ while (added < maxMatches && !stopping) {
   const history = await client.playerHistory(next.id, { limit: perPlayer });
   let newForPlayer = 0;
 
-  // Les matchs inconnus sont traités en parallèle : le limiteur de débit
-  // partagé garde l'ensemble sous le plafond de l'API.
+  // Unknown matches are processed in parallel: the shared rate limiter keeps
+  // the whole batch under the API's cap.
   const todo = history
     .map((item) => ({ item, matchId: item.match_id ?? item.matchId }))
     .filter(({ matchId }) => matchId && !db.hasMatch(matchId));
@@ -236,14 +235,14 @@ while (added < maxMatches && !stopping) {
   db.markPlayerCrawled(next.id);
   const stats = db.stats();
   console.log(
-    `${next.nickname ?? next.id} (profondeur ${next.depth}) : +${newForPlayer} matchs — ` +
-      `total ${stats.matches}, vetos ${stats.withVeto}, file ${stats.pending}`,
+    `${next.nickname ?? next.id} (depth ${next.depth}): +${newForPlayer} matches — ` +
+      `total ${stats.matches}, vetos ${stats.withVeto}, queue ${stats.pending}`,
   );
 }
 
 const final = db.stats();
 console.log(
-  `\nTerminé. ${final.matches} matchs dont ${final.withVeto} avec veto ` +
-    `(${final.vetoEvents} bans), ${final.players} joueurs connus, ${final.pending} en attente.`,
+  `\nDone. ${final.matches} matches, ${final.withVeto} of them with veto ` +
+    `(${final.vetoEvents} bans), ${final.players} known players, ${final.pending} pending.`,
 );
 db.close();

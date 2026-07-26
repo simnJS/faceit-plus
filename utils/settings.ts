@@ -1,12 +1,12 @@
 import { CS2_MAP_POOL } from './faceit-api';
 import type { LangSetting } from './i18n';
 
-// Réglages persistants de FACEIT+ (storage.local), consommés par le content
-// script et modifiables depuis le panneau de config injecté dans la page.
+// Persistent FACEIT+ settings (storage.local), consumed by the content
+// script and editable from the config panel injected into the page.
 
 export interface AutoAcceptSettings {
   enabled: boolean;
-  /** Délai (secondes) entre l'apparition du popup et l'acceptation. */
+  /** Delay (seconds) between the popup appearing and auto-accept. */
   delaySeconds: number;
 }
 
@@ -14,11 +14,11 @@ export type AutoVetoMode = 'order' | 'winrate';
 
 export interface AutoVetoSettings {
   enabled: boolean;
-  /** 'order' = préférences manuelles ; 'winrate' = bannir nos pires maps. */
+  /** 'order' = manual preferences; 'winrate' = ban our worst maps. */
   mode: AutoVetoMode;
-  /** Ordre de préférence (préférées en premier) — on bannit la moins préférée dispo. */
+  /** Preference order (most preferred first) — bans the least preferred available map. */
   order: string[];
-  /** Délai (secondes) avant chaque ban automatique. */
+  /** Delay (seconds) before each automatic ban. */
   delaySeconds: number;
 }
 
@@ -90,7 +90,7 @@ export async function saveSettings(patch: DeepPartial<Settings>): Promise<Settin
   return next;
 }
 
-/** Observe les changements de réglages (autres onglets / panneau). Renvoie un unsubscribe. */
+/** Watches for settings changes (other tabs / panel). Returns an unsubscribe function. */
 export function watchSettings(callback: (settings: Settings) => void): () => void {
   const listener = (
     changes: Record<string, { newValue?: unknown }>,

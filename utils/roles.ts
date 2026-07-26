@@ -1,13 +1,13 @@
-// Estimation du rôle d'un joueur à partir de ses stats lifetime FACEIT.
-// Formule répliquée de Mappio v4.4.6 (fonction `So`) : 5 rôles scorés 0-100
-// (sniper, entry, support, clutcher, anchor), plus « carry » (composite),
-// « rifler » (par défaut) et « unknown » (moins de 20 matchs).
+// Estimates a player's role from their FACEIT lifetime stats.
+// Formula replicated from Mappio v4.4.6 (function `So`): 5 roles scored 0-100
+// (sniper, entry, support, clutcher, anchor), plus "carry" (composite),
+// "rifler" (default) and "unknown" (fewer than 20 matches).
 //
-// Champs lifetime utilisés (tous des fractions 0..1 sauf m*, vérifié sur données réelles) :
-//   m1  = matchs            k19 = taux d'entrées        k18 = réussite en entrée
-//   k20 = winrate 1v1       k21 = winrate 1v2           m26 = nombre de 1v1
-//   m28 = nombre de 1v2     k27 = réussite utilitaire   k28 = utilitaire par round
-//   k23 = réussite des flashs                           k29 = taux de kills au sniper
+// Lifetime fields used (all fractions 0..1 except m*, verified against real data):
+//   m1  = matches            k19 = entry rate            k18 = entry success rate
+//   k20 = 1v1 winrate        k21 = 1v2 winrate           m26 = number of 1v1s
+//   m28 = number of 1v2s     k27 = utility success rate  k28 = utility per round
+//   k23 = flash success rate                              k29 = sniper kill rate
 
 import { statNumber, type RawStatRecord } from './faceit-api';
 
@@ -21,7 +21,7 @@ export interface RoleResult {
   scores: RoleScores;
 }
 
-/** Ordre d'évaluation (départage les ex æquo : le premier gagne). */
+/** Evaluation order (breaks ties: the first one wins). */
 export const SCORED_ROLES: ScoredRole[] = ['sniper', 'entry', 'support', 'clutcher', 'anchor'];
 
 export const ROLE_GRADIENT: Record<Role, string> = {
@@ -35,7 +35,7 @@ export const ROLE_GRADIENT: Record<Role, string> = {
   unknown: 'linear-gradient(30deg,#4b5563,#374151)',
 };
 
-/** Bornes du dégradé, pour teinter les SVG et les chiffres. */
+/** Gradient endpoints, used to tint SVGs and numbers. */
 export const ROLE_STOPS: Record<Role, [string, string]> = {
   sniper: ['#A855F7', '#EC4899'],
   entry: ['#f97316', '#ef4444'],
@@ -49,7 +49,7 @@ export const ROLE_STOPS: Record<Role, [string, string]> = {
 
 const MIN_MATCHES = 20;
 
-// Constantes de la formule Mappio
+// Mappio formula constants
 const ENTRY_RATE_LOW = 0.15;
 const ENTRY_RATE_HIGH = 0.26;
 const ANCHOR_DELTA_LOW = -0.067;
@@ -59,7 +59,7 @@ const CLUTCH_1V1_SD = 0.068;
 const CLUTCH_1V2_MEAN = 0.2178;
 const CLUTCH_1V2_SD = 0.059;
 
-/** Courbe taux de sniper → score. */
+/** Sniper rate → score curve. */
 const SNIPER_CURVE: Array<[rate: number, score: number]> = [
   [0, 0],
   [0.01, 10],
@@ -76,7 +76,7 @@ const SNIPER_CURVE: Array<[rate: number, score: number]> = [
   [0.47, 100],
 ];
 
-// Tables de percentiles (percentile → seuil)
+// Percentile tables (percentile → threshold)
 const UTILITY_PERCENTILES: Record<number, number> = {
   10: 0.056,
   25: 0.081,
@@ -101,7 +101,7 @@ const clamp01 = (value: number, lo: number, hi: number) =>
 
 const clampScore = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 
-/** Percentile interpolé d'une valeur dans une table {percentile: seuil}. */
+/** Interpolated percentile of a value within a {percentile: threshold} table. */
 function percentile(value: number, table: Record<number, number>): number {
   const points = Object.keys(table)
     .map(Number)
@@ -135,7 +135,7 @@ function sniperScore(rate: number): number {
 
 const EMPTY_SCORES: RoleScores = { sniper: 0, entry: 0, support: 0, clutcher: 0, anchor: 0 };
 
-/** Calcule les scores de rôle et le rôle retenu depuis l'objet lifetime brut. */
+/** Computes role scores and the resulting role from the raw lifetime stats object. */
 export function scoreRoles(lifetime: RawStatRecord | null | undefined): RoleResult {
   if (!lifetime) return { role: 'unknown', scores: { ...EMPTY_SCORES } };
 
@@ -154,10 +154,10 @@ export function scoreRoles(lifetime: RawStatRecord | null | undefined): RoleResu
   const flashSuccess = num('k23');
   const sniperRate = num('k29');
 
-  // SNIPER — courbe du taux de kills au sniper
+  // SNIPER - based on the sniper kill rate curve
   const sniper = sniperScore(sniperRate);
 
-  // ENTRY — 60 % volume d'entrées + 40 % surperformance en entrée
+  // ENTRY - 60% entry volume + 40% entry overperformance
   const expectedEntry = 0.473 + 0.175 * entryRate;
   const entryDelta = entrySuccess - expectedEntry;
   const entry = clampScore(
@@ -166,20 +166,20 @@ export function scoreRoles(lifetime: RawStatRecord | null | undefined): RoleResu
         0.4 * clamp01(entryDelta, -0.07, 0.07)),
   );
 
-  // SUPPORT — 60 % utilitaire efficace par round + 40 % flashs réussies
+  // SUPPORT - 60% effective utility per round + 40% successful flashes
   const support = clampScore(
     0.6 * percentile(utilityUsage * utilitySuccess, UTILITY_PERCENTILES) +
       0.4 * percentile(flashSuccess, FLASH_PERCENTILES),
   );
 
-  // CLUTCHER — z-scores 1v1/1v2 lissés vers la moyenne de la ligue (priors 30 et 20)
+  // CLUTCHER - 1v1/1v2 z-scores shrunk toward the league mean (priors 30 and 20)
   const shrunk1v1 = (attempts1v1 * clutch1v1 + 30 * CLUTCH_1V1_MEAN) / (attempts1v1 + 30);
   const shrunk1v2 = (attempts1v2 * clutch1v2 + 20 * CLUTCH_1V2_MEAN) / (attempts1v2 + 20);
   const z1v1 = (shrunk1v1 - CLUTCH_1V1_MEAN) / CLUTCH_1V1_SD;
   const z1v2 = (shrunk1v2 - CLUTCH_1V2_MEAN) / CLUTCH_1V2_SD;
   const clutcher = clampScore(0.45 * (50 + 40 * z1v1) + 0.55 * (50 + 40 * z1v2));
 
-  // ANCHOR — 50 % faible taux d'entrée (rampe inverse) + 50 % surperformance
+  // ANCHOR - 50% low entry rate (inverse ramp) + 50% overperformance
   const expectedAnchor = 0.457993 + 0.243934 * entryRate;
   const anchorDelta = entrySuccess - expectedAnchor;
   const lowEntry =
@@ -203,29 +203,27 @@ export function scoreRoles(lifetime: RawStatRecord | null | undefined): RoleResu
   return { role: scores[best] > 60 ? best : 'rifler', scores };
 }
 
-// ── Icônes (SVG maison, 24×24, tracé teinté par le dégradé du rôle) ─────────
-
 const ICON_PATHS: Record<Role, string> = {
-  // lunette de visée
+  // scope
   sniper: '<circle cx="12" cy="12" r="7"/><path d="M12 1v5M12 18v5M1 12h5M18 12h5"/>',
-  // flèche d'assaut
+  // assault arrow
   entry: '<path d="M3 12h13M11 6l6 6-6 6M20 5v14"/>',
-  // grenade / soutien
+  // grenade / support
   support: '<circle cx="12" cy="13" r="6"/><path d="M12 4v3M9 4h6M17 8l3-3"/>',
-  // éclair
+  // lightning bolt
   clutcher: '<path d="M13 2L5 14h6l-1 8 8-12h-6z"/>',
-  // ancre
+  // anchor
   anchor: '<circle cx="12" cy="4" r="2.5"/><path d="M12 7v14M6 12H4a8 8 0 0 0 16 0h-2"/>',
-  // couronne
+  // crown
   carry: '<path d="M4 18h16M4 18l-1.2-9L8 13l4-8 4 8 5.2-4-1.2 9z"/>',
-  // balle / fusil
+  // bullet / rifle
   rifler: '<path d="M3 10h13l4 2-4 2H9l-2 3v-3H3z"/>',
   unknown: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3v1.7M12 17h.01"/>',
 };
 
 let iconSeq = 0;
 
-/** SVG inline de l'icône du rôle, tracé dans le dégradé du rôle. */
+/** Inline SVG for the role icon, its stroke tinted by the role gradient. */
 export function roleIconSvg(role: Role, size = 13): string {
   const [from, to] = ROLE_STOPS[role];
   const id = `fp-role-${role}-${(iconSeq += 1)}`;

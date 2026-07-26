@@ -1,123 +1,126 @@
-# Crawler FACEIT
+# FACEIT crawler
 
-Outil autonome qui constitue une base de vetos, destinée à entraîner un modèle de
-prédiction de map plus fin que l'heuristique actuelle de l'extension.
+Standalone tool that builds a database of vetos, meant to train a map
+prediction model finer than the extension's current heuristic.
 
-Aucune dépendance : Node 22+ suffit (SQLite est intégré).
+No dependencies: Node 22+ is enough (SQLite is built in).
 
-## Clé d'API
+## API key
 
-Le crawler utilise l'**API officielle** pour la découverte des joueurs et des
-matchs. Une clé gratuite s'obtient sur [developers.faceit.com](https://developers.faceit.com) :
-créer une application, puis générer une clé « server side ».
+The crawler uses the **official API** to discover players and matches. A free
+key is obtained at [developers.faceit.com](https://developers.faceit.com):
+create an application, then generate a "server side" key.
 
-La séquence de bans n'étant pas exposée par l'API officielle, elle est lue sur
-l'endpoint public de veto — sans clé, mais soumise au même limiteur de débit.
+Since the ban sequence isn't exposed by the official API, it is read from the
+public veto endpoint — no key required, but subject to the same rate limiter.
 
-## Utilisation
+## Usage
 
-Copier `.env.example` en `.env` à la racine et y renseigner la clé, puis :
+Copy `.env.example` to `.env` at the repo root and fill in the key, then:
 
 ```bash
 npm run crawl
 ```
 
-Le `.env` est chargé automatiquement (`FACEIT_API_KEY` et `FACEIT_SEED`) et il est
-exclu du dépôt. Les options s'ajoutent après `--` :
+The `.env` file is loaded automatically (`FACEIT_API_KEY` and `FACEIT_SEED`)
+and is excluded from the repo. Options go after `--`:
 
 ```bash
 npm run crawl -- --max-matches 50000 --rps 3
 ```
 
-Le crawl fonctionne en **boule de neige** : il part de la graine, récupère ses
-matchs, puis les dix joueurs de chaque match rejoignent la file d'attente. La
-couverture s'étend d'elle-même à toutes les tranches d'elo.
+The crawl works as a **snowball**: it starts from the seed, fetches its
+matches, then the ten players of each match join the queue. Coverage extends
+itself naturally to every elo bracket.
 
-Options utiles :
+Useful options:
 
-| Option | Rôle |
+| Option | Role |
 | --- | --- |
-| `--seed <pseudo>` | point de départ, répétable (inutile une fois la base amorcée) |
-| `--max-matches <n>` | s'arrête après avoir ajouté n matchs |
-| `--max-depth <n>` | limite l'éloignement par rapport aux graines |
-| `--per-player <n>` | matchs récupérés par joueur (max 100) |
-| `--rps <n>` | plafond sur l'API officielle, 22 par défaut |
-| `--veto-rps <n>` | plafond sur l'endpoint de veto, 35 par défaut |
-| `--concurrency <n>` | matchs traités en parallèle, 10 par défaut |
+| `--seed <nickname>` | starting point, repeatable (unnecessary once the database is seeded) |
+| `--max-matches <n>` | stop after adding n matches |
+| `--max-depth <n>` | limit how far to stray from the seeds |
+| `--per-player <n>` | matches fetched per player (max 100) |
+| `--rps <n>` | cap on the official API, 22 by default |
+| `--veto-rps <n>` | cap on the veto endpoint, 35 by default |
+| `--concurrency <n>` | matches processed in parallel, 10 by default |
 
-### Limite de débit
+### Rate limit
 
-L'API officielle **annonce sa limite dans ses en-têtes de réponse** :
+The official API **announces its limit in its response headers**:
 
 ```
 ratelimit-limit: 20, 20;w=1
 ratelimit-remaining: 16
 ```
 
-Soit **20 requêtes par seconde**, sur une fenêtre glissante d'une seconde — pas
-un quota horaire. Le crawler se règle à 18 pour garder une marge. Monter au-delà
-ne sert à rien : les 429 arrivent et les pauses de reprise annulent le gain
-(mesuré : 17 matchs/s pour 10 refus à 28 req/s, contre 16,5 sans aucun refus).
+That is **20 requests per second**, on a sliding one-second window — not an
+hourly quota. The crawler sets itself to 18 to keep a margin. Going higher is
+pointless: 429s start showing up and the backoff pauses cancel out the gain
+(measured: 17 matches/s with 10 rejections at 28 req/s, versus 16.5 with zero
+rejections).
 
-L'endpoint de veto est plus permissif (aucun refus observé jusqu'à 60 req/s),
-d'où deux limiteurs distincts.
+The veto endpoint is more permissive (no rejection observed up to 60 req/s),
+hence the two separate limiters.
 
-En pratique : **~16 matchs/seconde**, soit près de 60 000 par heure. Compter
-environ 3 h 30 pour 200 000 matchs. Le débit baisse toutefois avec la
-profondeur, le crawler retombant de plus en plus souvent sur des matchs déjà
-connus.
+In practice: **~16 matches/second**, or close to 60,000 per hour. Expect
+about 3h30 for 200,000 matches. Throughput does drop with depth, though, as
+the crawler increasingly runs into matches it already knows.
 
-Pour aller au-delà, la voie prévue est de **demander un relèvement de quota au
-support FACEIT** en expliquant l'usage — pas de multiplier les clés, ce qui
-reviendrait à contourner la limite annoncée.
+To go further, the intended path is to **ask FACEIT support for a quota
+increase**, explaining the use case — not multiplying API keys, which would
+amount to working around the announced limit.
 
-## Suivi
+## Monitoring
 
 ```bash
 npm run crawl:stats
 ```
 
-Le crawl est **reprenable** : l'état vit dans la base, relancer la commande
-continue là où on s'est arrêté. `Ctrl+C` termine proprement le joueur en cours.
+The crawl is **resumable**: the state lives in the database, so rerunning the
+command picks up where it left off. `Ctrl+C` cleanly finishes the current
+player.
 
-## Pays des joueurs
+## Player countries
 
-Le roster d'un match ne contient pas le pays : il faut une requête par joueur,
-faite à part pour ne pas ralentir le crawl et une seule fois par joueur.
+A match's roster does not include country data: it takes one request per
+player, done separately so it doesn't slow down the crawl, and only once per
+player.
 
 ```bash
 npm run crawl:enrich -- --limit 2000
 ```
 
-Le pays sert surtout à décrire la **composition du lobby** (nombre de
-nationalités, taille du plus gros bloc commun), qui renseigne sur le degré de
-coordination d'une équipe — bien plus parlant que la nationalité prise isolément.
+Country data is mainly used to describe the **lobby composition** (number of
+nationalities, size of the largest common bloc), which is a signal for a
+team's degree of coordination — far more telling than nationality taken in
+isolation.
 
-## Jeu d'entraînement
+## Training set
 
 ```bash
 node crawler/export.mjs --out crawler/dataset.jsonl
 ```
 
-Produit **une ligne par décision de ban** : l'état du veto avant la décision
-(maps restantes, numéro du tour, camp et capitaine qui bannit, elo et niveau
-moyens des deux équipes, région, date) et la map effectivement bannie, qui est la
-cible à prédire.
+Produces **one line per ban decision**: the veto state before the decision
+(remaining maps, turn number, side and captain who is banning, both teams'
+average elo and level, region, date) and the map actually banned, which is
+the target to predict.
 
-C'est le format adapté à un modèle de politique : on apprend à prédire *le
-prochain ban*, puis on déroule le modèle dans la simulation Monte-Carlo déjà
-présente dans l'extension pour obtenir la map finale.
+This is the format suited to a policy model: we learn to predict *the next
+ban*, then roll the model forward in the Monte Carlo simulation already
+present in the extension to obtain the final map.
 
 ## Volume
 
-Un veto représente environ six lignes. Quelques dizaines de milliers de matchs
-suffisent largement à entraîner un modèle à sept classes — l'ordre de grandeur
-utile se compte en dizaines de milliers, pas en millions.
+A veto is roughly six lines. A few tens of thousands of matches are plenty to
+train a seven-class model — the useful order of magnitude is tens of
+thousands, not millions.
 
-## Bonne conduite
+## Good conduct
 
-Une seule adresse IP, un débit modéré, pas de rotation de proxy ni de
-contournement de protection : `--rps 3` reste très en dessous des limites et
-n'inquiète personne. Si un `429` survient, le client attend et réessaie tout seul.
-Inutile d'aller plus vite : le facteur limitant est le volume total à collecter
-une bonne fois, pas le débit instantané.
+A single IP address, a moderate rate, no proxy rotation or protection
+bypass: `--rps 3` stays well under the limits and bothers no one. If a `429`
+occurs, the client waits and retries on its own. There's no point going
+faster: the limiting factor is the total volume to collect once, not the
+instantaneous rate.

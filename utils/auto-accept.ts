@@ -1,14 +1,15 @@
-// Auto-acceptation du popup « Match prêt » (mécanique répliquée de Repeek) :
-// détection du dialog par regex multilingue sur son innerHTML, bouton Accepter =
-// DERNIER <button> du dialog, clic natif .click() après un délai configurable,
-// toast avec compte à rebours + Annuler, garde anti-doublon par attribut DOM.
+// Auto-accept of the "Match ready" popup (mechanic replicated from Repeek):
+// detect the dialog via a multilingual regex on its innerHTML, the Accept
+// button = the LAST <button> in the dialog, native .click() after a
+// configurable delay, countdown toast + Cancel, DOM-attribute guard against
+// double-triggering.
 
 import { showCountdownToast } from './toast';
 import type { Translator } from './i18n';
 
 const MARKER = 'data-fp-trigger-auto-accept';
 
-// « Match ready » dans les 21 langues de FACEIT (extrait de Repeek v5.6.4)
+// "Match ready" in FACEIT's 21 languages (extracted from Repeek v5.6.4)
 const MATCH_READY = [
   'Match ready',
   '경기 준비',
@@ -37,7 +38,7 @@ const MATCH_READY_RE = new RegExp(MATCH_READY.join('|'));
 const DIALOG_SELECTOR =
   'div[role="dialog"]:has(div[class*="ConfirmationStyledContainer"] > button)';
 
-/** À appeler à chaque passe du MutationObserver global. Idempotent. */
+/** To be called on every pass of the global MutationObserver. Idempotent. */
 export function runAutoAccept(delaySeconds: number, t: Translator): void {
   const dialogs = document.querySelectorAll<HTMLElement>(DIALOG_SELECTOR);
   let button: HTMLElement | null = null;
@@ -67,7 +68,7 @@ export function runAutoAccept(delaySeconds: number, t: Translator): void {
     },
   });
 
-  // Si le bouton disparaît (clic manuel, dialog expiré) : on range le toast.
+  // If the button disappears (manual click, dialog expired): dismiss the toast.
   const watcher = new MutationObserver(() => {
     if (!target.isConnected) {
       toast.dismiss();

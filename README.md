@@ -1,39 +1,39 @@
 # FACEIT+
 
-Extension navigateur qui enrichit les salles de match FACEIT (CS2), sur Chrome et Firefox.
+Browser extension that enriches FACEIT (CS2) match rooms, on Chrome and Firefox.
 
-## Fonctionnalités
+## Features
 
-**Dans la salle de match**
+**In the match room**
 
-- **Drapeaux de pays** à côté de chaque pseudo.
-- **Rang CS2 Premier** affiché devant le niveau FACEIT, aux couleurs officielles des paliers.
-- **K/D par map** sous chaque joueur, calé sur le pool du match : seule la map retenue est
-  affichée une fois le veto terminé, un bouton déplie le pool complet.
-- **Rôle estimé** (sniper, entry, support, clutcher, anchor, carry, rifler) avec le détail
-  des scores au survol.
+- **Country flags** next to each nickname.
+- **CS2 Premier rank** displayed before the FACEIT level, in the tier's official colors.
+- **K/D per map** under each player, matched to the match's map pool: only the
+  picked map is shown once the veto is over, and a button expands the full pool.
+- **Estimated role** (sniper, entry, support, clutcher, anchor, carry, rifler) with
+  the score breakdown on hover.
 
-**Pendant le veto**
+**During the veto**
 
-- **Winrate des deux équipes** sur chaque map, agrégé sur l'historique récent des joueurs.
-- **Probabilité de ban** de chaque map, calculée depuis l'historique de veto du capitaine adverse.
-- **Quelle map bannir**, recommandée par un modèle entraîné sur des dizaines de
-  milliers de vetos réels : pour chaque ban possible, il déroule la suite du veto
-  et retient celui qui maximise l'avantage attendu sur la map finale. La
-  recommandation se recalcule à chaque tour.
-- **Map la plus probable** à l'arrivée, calculée exactement plutôt qu'estimée.
-- Les tuiles bannies sont estompées au fil des tours.
+- **Winrate of both teams** on each map, aggregated from the players' recent history.
+- **Ban probability** of each map, computed from the enemy captain's veto history.
+- **Which map to ban**, recommended by a model trained on tens of thousands of
+  real vetos: for every possible ban, it plays out the rest of the veto and
+  keeps the option that maximizes the expected advantage on the final map. The
+  recommendation is recomputed on every turn.
+- **Most likely final map**, computed exactly rather than estimated.
+- Banned tiles are dimmed as the rounds go by.
 
-**Automatismes** (désactivés par défaut)
+**Automation** (disabled by default)
 
-- **Acceptation automatique** du match, avec délai réglable et possibilité d'annuler.
-- **Ban automatique de maps** quand vous êtes capitaine, soit selon un ordre de préférence,
-  soit en bannissant la map où votre équipe a le pire winrate.
+- **Auto-accept** the match, with an adjustable delay and the option to cancel.
+- **Auto-ban maps** when you are captain, either following a preferred order
+  or by banning the map where your team has the worst winrate.
 
-**Réglages** — un panneau accessible depuis la pastille en bas à droite de FACEIT permet
-d'activer chaque fonctionnalité et de choisir la langue (français / anglais).
+**Settings** — a panel accessible from the badge in the bottom-right corner of FACEIT
+lets you toggle each feature and choose the language (French / English).
 
-## Développement
+## Development
 
 ```bash
 npm install
@@ -41,42 +41,43 @@ npm run dev          # Chrome
 npm run dev:firefox  # Firefox
 ```
 
-Chargez ensuite `.output/chrome-mv3-dev` via `chrome://extensions` en mode développeur
-(« Charger l'extension non empaquetée »). Les modifications de code sont ensuite appliquées
-automatiquement ; seuls les changements de manifeste demandent un rechargement manuel.
+Then load `.output/chrome-mv3-dev` via `chrome://extensions` in developer mode
+("Load unpacked"). Code changes are then applied automatically; only manifest
+changes require a manual reload.
 
 ```bash
-npm run compile      # vérification TypeScript
-npm run build        # build de production Chrome
+npm run compile      # TypeScript check
+npm run build        # Chrome production build
 npm run build:firefox
-npm run zip          # archive prête pour les stores
+npm run zip          # store-ready archive
 ```
 
-## Le modèle de veto
+## The veto model
 
-Les poids sont entraînés hors ligne (voir [`crawler/`](crawler/)) puis **embarqués
-dans l'extension** — quelques kilo-octets. Aucun serveur, aucune latence, aucune
-donnée qui sort du navigateur : la prédiction tourne entièrement chez vous.
+The weights are trained offline (see [`crawler/`](crawler/)) and then **bundled
+into the extension** — a few kilobytes. No server, no latency, no data leaves
+the browser: the prediction runs entirely on your machine.
 
-Mesuré sur des matchs postérieurs à l'entraînement, jamais vus :
+Measured on matches after the training cutoff, never seen before:
 
-| | modèle | meilleure règle simple | hasard |
+| | model | best simple rule | random |
 | --- | --- | --- | --- |
-| prochain ban | ~55 % | ~33 % | ~27 % |
-| map finalement jouée | ~34 % | ~26 % | ~15 % |
+| next ban | ~55% | ~33% | ~27% |
+| map actually played | ~34% | ~26% | ~15% |
 
-La découpe est temporelle et en trois jeux : entraînement, validation pour le
-choix de l'époque, et un jeu de test consulté une seule fois — sans quoi le
-chiffre publié serait le meilleur de vingt tirages plutôt qu'une mesure honnête.
+The split is temporal and in three sets: training, validation for picking the
+epoch, and a test set consulted only once — otherwise the published number
+would be the best of twenty rolls rather than an honest measurement.
 
-## Sources de données
+## Data sources
 
-L'extension s'appuie sur les API internes de FACEIT (mêmes requêtes que le site, avec vos
-cookies de session) pour les profils, l'historique et le veto. Le rang Premier, absent de
-FACEIT, provient de csstats.gg avec Leetify en secours. Aucune donnée n'est envoyée à un
-serveur tiers : tous les calculs sont faits dans le navigateur et mis en cache localement.
+The extension relies on FACEIT's internal APIs (the same requests the site
+makes, using your session cookies) for profiles, history, and veto. The
+Premier rank, absent from FACEIT, comes from csstats.gg with Leetify as a
+fallback. No data is sent to any third-party server: all computations happen
+in the browser and are cached locally.
 
-## Pile technique
+## Tech stack
 
-[WXT](https://wxt.dev) (Manifest V3, builds Chrome et Firefox depuis une base unique),
-TypeScript et React.
+[WXT](https://wxt.dev) (Manifest V3, builds Chrome and Firefox from a single
+codebase), TypeScript, and React.

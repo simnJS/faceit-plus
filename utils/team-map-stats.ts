@@ -1,15 +1,15 @@
 import type { MapStat, RosterPlayer } from './faceit-api';
 
 export interface TeamMapStat {
-  /** Winrate agrégé de l'équipe sur la map, en % (0-100), ou null si aucune donnée. */
+  /** Team's aggregated winrate on the map, in % (0-100), or null if no data. */
   winrate: number | null;
-  /** Nombre total de matchs de l'équipe sur la map (somme des joueurs). */
+  /** Total number of team matches on the map (sum across players). */
   games: number;
 }
 
 /**
- * Agrège les stats par map d'une équipe : somme des wins / somme des games de
- * tous les joueurs du roster (les joueurs sans historique sur une map comptent 0).
+ * Aggregates a team's per-map stats: sum of wins / sum of games across all
+ * roster players (players with no history on a map count as 0).
  */
 export function computeTeamMapStats(
   roster: RosterPlayer[],

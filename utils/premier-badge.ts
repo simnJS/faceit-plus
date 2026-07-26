@@ -1,13 +1,13 @@
-// Badge rank CS2 Premier — réplique 1:1 du badge de csrep.gg (référence choisie
-// par l'utilisateur) : SVG inline `viewBox 0 0 125 40` = tuile arrondie penchée
-// (fond sombre du tier + contour), deux stripes obliques à gauche, nombre italique
-// gras avec les milliers en 22px et le reste en 20px (unités du viewBox).
-// Couleurs extraites des variables CSS --color-premier-* de csrep.gg.
+// CS2 Premier rank badge — a 1:1 replica of csrep.gg's badge (the reference chosen
+// by the user): inline SVG `viewBox 0 0 125 40` = a rounded, slanted tile (dark tier
+// background + outline), two diagonal stripes on the left, bold italic number with
+// the thousands in 22px and the rest in 20px (viewBox units).
+// Colors extracted from csrep.gg's --color-premier-* CSS variables.
 
 interface Tier {
   min: number;
-  color: string; // couleur vive (stripes, contour, texte)
-  surface: string; // fond sombre de la tuile
+  color: string; // bright color (stripes, outline, text)
+  surface: string; // dark tile background
 }
 
 const TIERS: Tier[] = [
@@ -23,7 +23,7 @@ function tierFor(rating: number): Tier {
   return TIERS.find((t) => rating >= t.min) ?? TIERS[TIERS.length - 1];
 }
 
-// Géométrie du badge csrep.gg (extraite de leur SVG, à ne pas modifier)
+// csrep.gg badge geometry (extracted from their SVG, do not modify)
 const TILE_PATH =
   'M10.5449 1H118.411C121.468 1.0002 123.809 3.71928 123.355 6.74219L119.155 34.7422C118.788 37.1895 116.686 38.9999 114.211 39H6.34473C3.28805 38.9998 0.946954 36.2807 1.40039 33.2578L5.60059 5.25781C5.96793 2.81051 8.07017 1.00006 10.5449 1Z';
 const STRIPE1_PATH =
@@ -33,8 +33,9 @@ const STRIPE2_PATH = 'M17.2617 0H26.2617L20.2617 40H11.2617L17.2617 0Z';
 const FONT = `Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, Arial, sans-serif`;
 
 /**
- * Badge Premier (élément détaché, à insérer soi-même).
- * @param rating rating Premier CS2 (> 0)
+ * Premier badge (detached element, caller must insert it). No margin: the caller
+ * is responsible for spacing it based on where it's placed.
+ * @param rating CS2 Premier rating (> 0)
  */
 export function createPremierBadge(rating: number): HTMLElement {
   const tier = tierFor(rating);
@@ -52,7 +53,7 @@ export function createPremierBadge(rating: number): HTMLElement {
     'display:inline-flex',
     'width:63px',
     'height:20px',
-    'margin-right:10px',
+    'flex:none', // inside a flex-column card, don't allow it to be squeezed
     'vertical-align:middle',
     'cursor:default',
   ].join(';');

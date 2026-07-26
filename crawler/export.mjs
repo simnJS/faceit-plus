@@ -1,13 +1,13 @@
-// Transforme la base en jeu d'entraînement, au format « une ligne par décision ».
+// Turns the database into a training set, formatted as one line per decision.
 //
 //   npm run crawl:export
 //
-// Chaque ligne décrit UN ban : l'état du veto à cet instant et tout le contexte
-// disponible, plus la map effectivement bannie — la cible à prédire.
+// Each line describes ONE ban: the veto state at that moment and all
+// available context, plus the map actually banned — the target to predict.
 //
-// Les variables sont données du point de vue du camp qui bannit (`banner_*` /
-// `opponent_*`) plutôt que faction1/faction2, dont l'ordre est arbitraire : c'est
-// ce que le modèle doit apprendre à exploiter.
+// Variables are given from the perspective of the banning side (`banner_*` /
+// `opponent_*`) rather than faction1/faction2, whose order is arbitrary: this
+// is exactly what the model needs to learn to exploit.
 
 import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -18,12 +18,12 @@ const { values } = parseArgs({
     db: { type: 'string', default: 'crawler/faceit.db' },
     out: { type: 'string', default: 'crawler/dataset.jsonl' },
     'min-pool': { type: 'string', default: '5' },
-    // Le crawl ramasse aussi des hubs et des parties personnalisées : maps d'aim,
-    // arènes 1v1, cartes d'atelier. Elles n'ont rien à faire dans un modèle de
-    // veto compétitif et gaspillent la capacité du modèle.
+    // The crawler also picks up hubs and custom games: aim maps, 1v1 arenas,
+    // workshop maps. These don't belong in a competitive veto model and just
+    // waste model capacity.
     'official-only': { type: 'boolean', default: true },
     'all-competitions': { type: 'boolean', default: false },
-    /** Part minimale des matchs où une map doit apparaître pour être retenue. */
+    /** Minimum share of matches a map must appear in to be kept. */
     'min-map-share': { type: 'string', default: '0.02' },
   },
 });
@@ -54,9 +54,9 @@ const teamsFor = db.prepare(
    FROM match_teams WHERE match_id = ?`,
 );
 
-// Historique par joueur, pour calculer le vécu d'une équipe sur chaque map
-// AVANT la date du match considéré : sans ce filtre temporel, le modèle
-// apprendrait à partir de matchs qui n'avaient pas encore eu lieu.
+// Per-player history, used to compute a team's track record on each map
+// BEFORE the date of the match in question: without this temporal filter,
+// the model would learn from matches that hadn't happened yet.
 const history = new Map();
 for (const row of db
   .prepare(
@@ -74,13 +74,13 @@ for (const row of db
 }
 for (const list of history.values()) list.sort((a, b) => a.at - b.at);
 
-/** Matchs joués et gagnés par une équipe sur chaque map, avant `before`. */
+/** Matches played and won by a team on each map, before `before`. */
 function teamMapRecord(playerIds, before, maps) {
   const record = {};
-  for (const map of maps) record[map] = [0, 0]; // [joués, gagnés]
+  for (const map of maps) record[map] = [0, 0]; // [played, won]
   for (const id of playerIds) {
     for (const entry of history.get(id) ?? []) {
-      if (entry.at >= before) break; // trié par date
+      if (entry.at >= before) break; // sorted by date, so it's safe to stop here
       const slot = record[entry.map];
       if (slot) {
         slot[0] += 1;
@@ -96,7 +96,7 @@ const average = (rows, field) => {
   return nums.length ? Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(3)) : null;
 };
 
-/** Composition du lobby : diversité des nationalités et plus gros bloc commun. */
+/** Lobby composition: nationality diversity and the largest shared block. */
 function composition(players) {
   const known = players.map((p) => p.country).filter((c) => c && c !== '??');
   if (known.length === 0) return { countries: null, biggestBloc: null, coverage: 0 };
@@ -109,12 +109,12 @@ function composition(players) {
   };
 }
 
-/** Un nom d'équipe auto-généré (« team_pseudo ») signale une file d'attente. */
+/** An auto-generated team name (`team_pseudo`) signals a matchmaking queue rather than a premade. */
 const isNamedTeam = (name) => (name ? (/^team_/i.test(name) ? 0 : 1) : null);
 
-// Premier passage : quelles maps sont réellement jouées en compétitif ? On les
-// déduit des données plutôt que de figer une liste, pour survivre aux évolutions
-// du pool officiel.
+// First pass: which maps are actually played competitively? We infer this
+// from the data rather than hard-coding a list, so it survives changes to
+// the official map pool.
 const officialOnly = values['official-only'] && !values['all-competitions'];
 const eligible = matches.filter(
   (m) => !officialOnly || (m.organizer === 'faceit' && m.game_mode === '5v5' && m.competition === 'matchmaking'),
@@ -132,23 +132,23 @@ const knownMaps = new Set(
     .map(([map]) => map),
 );
 console.log(
-  `${knownMaps.size} maps retenues sur ${mapCounts.size} rencontrées ` +
-    `(seuil : ${(minShare * 100).toFixed(1)} % des matchs) : ${[...knownMaps].sort().join(', ')}`,
+  `${knownMaps.size} maps kept out of ${mapCounts.size} seen ` +
+    `(threshold: ${(minShare * 100).toFixed(1)}% of matches): ${[...knownMaps].sort().join(', ')}`,
 );
 
 const lines = [];
 let skipped = 0;
-let truncatedPools = 0; // matchs où `offered_pool` était plus petit que la réalité
-let offMap = 0; // matchs écartés pour cause de map hors pool compétitif
+let truncatedPools = 0; // matches where `offered_pool` was smaller than reality
+let offMap = 0; // matches dropped because of a map outside the competitive pool
 
 for (const match of eligible) {
   const events = eventsFor.all(match.id);
   const drops = events.filter((e) => e.action === 'drop' && !e.is_random);
 
-  // Le pool de départ est l'ensemble des maps APPARAISSANT DANS LE VETO, jamais
-  // `offered_pool` : ce champ vient de `voting.map.entities`, qui rétrécit au fil
-  // des bans. Sur un match terminé il ne contient plus que les survivantes, ce
-  // qui donnerait un pool tronqué — et une prédiction faussement facile.
+  // The starting pool is the set of maps APPEARING IN THE VETO, never
+  // `offered_pool`: that field comes from `voting.map.entities`, which shrinks
+  // as bans happen. On a finished match it only contains the survivors, which
+  // would give a truncated pool — and a falsely easy prediction target.
   const fromEvents = [...new Set(events.map((e) => e.map))].sort();
   const offered = match.offered_pool ? match.offered_pool.split(',') : [];
   const pool = [...new Set([...fromEvents, ...offered])].sort();
@@ -157,8 +157,8 @@ for (const match of eligible) {
     skipped += 1;
     continue;
   }
-  // Un seul intrus suffit à disqualifier le match : un veto mêlant maps
-  // compétitives et cartes d'atelier ne décrit pas le même jeu.
+  // A single outlier is enough to disqualify the match: a veto mixing
+  // competitive maps with workshop maps doesn't describe the same game.
   if (pool.some((map) => !knownMaps.has(map))) {
     offMap += 1;
     continue;
@@ -189,7 +189,7 @@ for (const match of eligible) {
     };
   }
 
-  // Vécu de chaque équipe sur les maps du pool, arrêté à la veille du match.
+  // Each team's track record on the pool's maps, cut off the day before the match.
   const rosterOf = (faction) => players.filter((p) => p.faction === faction).map((p) => p.player_id);
   const recordOf = {
     faction1: teamMapRecord(rosterOf('faction1'), match.played_at ?? Infinity, pool),
@@ -209,14 +209,14 @@ for (const match of eligible) {
     played_at: match.played_at,
     hour_of_day: date ? date.getUTCHours() : null,
     weekday: date ? date.getUTCDay() : null,
-    // Un veto expédié trahit des choix par défaut ou un joueur absent.
+    // A rushed veto suggests default picks or an absent player.
     veto_seconds:
       match.started_at && match.configured_at ? match.started_at - match.configured_at : null,
     pool_size: pool.length,
     pool: pool,
   };
 
-  // On rejoue la séquence : chaque ligne décrit l'état AVANT la décision.
+  // Replay the sequence: each line describes the state BEFORE the decision.
   let remaining = [...pool];
   drops.forEach((drop, step) => {
     if (!remaining.includes(drop.map)) return;
@@ -233,12 +233,12 @@ for (const match of eligible) {
         remaining: [...remaining],
         remaining_count: remaining.length,
         banning_faction: banner,
-        banned: drop.map, // ← cible
+        banned: drop.map, // ← target
         final_map: match.map_picked,
         ...context,
         ...(banner && side[banner] ? prefix(side[banner], 'banner') : {}),
         ...(opponent && side[opponent] ? prefix(side[opponent], 'opponent') : {}),
-        // { map: [matchs joués, gagnés] } par équipe, antérieur au match
+        // { map: [played, won] } per team, prior to the match
         banner_record: banner ? recordOf[banner] : null,
         opponent_record: opponent ? recordOf[opponent] : null,
       }),
@@ -249,15 +249,15 @@ for (const match of eligible) {
 
 writeFileSync(values.out, lines.join('\n') + (lines.length ? '\n' : ''));
 console.log(
-  `${lines.length} décisions écrites dans ${values.out} ` +
-    `(${eligible.length - skipped - offMap} matchs retenus sur ${matches.length}, ` +
-    `${skipped} sans veto exploitable, ${offMap} hors pool compétitif, ` +
-    `${matches.length - eligible.length} hors matchmaking officiel).`,
+  `${lines.length} decisions written to ${values.out} ` +
+    `(${eligible.length - skipped - offMap} matches kept out of ${matches.length}, ` +
+    `${skipped} without a usable veto, ${offMap} outside the competitive pool, ` +
+    `${matches.length - eligible.length} outside official matchmaking).`,
 );
 if (truncatedPools > 0) {
   console.log(
-    `${truncatedPools} matchs avaient un champ offered_pool tronqué (il rétrécit avec les bans) : ` +
-      `le pool a été reconstitué depuis la séquence de veto.`,
+    `${truncatedPools} matches had a truncated offered_pool field (it shrinks with each ban): ` +
+      `the pool was reconstructed from the veto sequence.`,
   );
 }
 db.close();

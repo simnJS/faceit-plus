@@ -1,10 +1,10 @@
-// Entraînement du modèle de prédiction de veto.
+// Training the veto prediction model.
 //
 //   npm run model:train
 //
-// Découpe temporelle (passé → futur), entraînement, et à chaque époque un point
-// d'avancement : perte, précision sur le prochain ban, et de temps en temps la
-// précision sur la map finale, qui est l'objectif réel.
+// Temporal split (past -> future), training, and at each epoch a progress
+// report: loss, next-ban accuracy, and occasionally final-map accuracy,
+// which is the real objective.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -21,18 +21,18 @@ const { values } = parseArgs({
   options: {
     data: { type: 'string', default: 'crawler/dataset.jsonl' },
     out: { type: 'string', default: 'crawler/model.json' },
-    // Les poids sont aussi déposés dans l'extension, qui les embarque tels quels.
+    // The weights are also dropped into the extension, which bundles them as-is.
     'extension-out': { type: 'string', default: 'utils/veto-model-weights.json' },
     epochs: { type: 'string', default: '30' },
     lr: { type: 'string', default: '0.3' },
     l2: { type: 'string', default: '0.0001' },
     'every-final': { type: 'string', default: '5' },
-    // Nombre minimal de décisions connues pour le capitaine évalué. En
-    // production l'extension dispose toujours de son historique complet.
+    // Minimum number of known decisions for the evaluated captain. In
+    // production the extension always has the captain's full history.
     'min-captain': { type: 'string', default: '10' },
-    // Restreindre aussi l'ENTRAÎNEMENT aux capitaines connus : sinon le poids de
-    // leur habitude de veto est dilué par des milliers d'exemples où la variable
-    // est vide, alors qu'en production elle est toujours renseignée.
+    // Also restrict TRAINING to known captains: otherwise the weight of their
+    // veto habit gets diluted by thousands of examples where the variable is
+    // empty, even though it is always populated in production.
     'train-min-captain': { type: 'string', default: '0' },
   },
 });
@@ -43,15 +43,15 @@ const rows = readFileSync(values.data, 'utf8')
   .map((line) => JSON.parse(line));
 
 if (rows.length === 0) {
-  console.error(`Aucune donnée dans ${values.data}. Lancer npm run crawl:export d'abord.`);
+  console.error(`No data in ${values.data}. Run npm run crawl:export first.`);
   process.exit(1);
 }
 
 const split = temporalSplit(rows, [0.7, 0.15]);
 const minCaptain = Number(values['min-captain']);
 
-// L'évaluation se restreint aux capitaines dont on connaît l'historique, ce qui
-// reflète la situation réelle de l'extension.
+// Evaluation is restricted to captains whose history is known, which
+// reflects the extension's real-world situation.
 const restrict = (decisions, matches) => {
   const kept = filterByCaptainHistory(decisions, split.train, minCaptain);
   const ids = new Set(kept.map((r) => r.match_id));
@@ -61,47 +61,47 @@ const val = restrict(split.val, split.valMatches);
 const test = restrict(split.test, split.testMatches);
 
 console.log(
-  `${rows.length} décisions — entraînement ${split.train.length} (${split.trainMatches.length} matchs), ` +
+  `${rows.length} decisions — training ${split.train.length} (${split.trainMatches.length} matches), ` +
     `validation ${split.val.length}, test ${split.test.length}`,
 );
 console.log(
-  `Capitaines connus (≥ ${minCaptain} décisions) — validation ${val.rows.length} décisions ` +
-    `sur ${val.matches.length} matchs, test ${test.rows.length} sur ${test.matches.length} matchs\n`,
+  `Known captains (>= ${minCaptain} decisions) — validation ${val.rows.length} decisions ` +
+    `across ${val.matches.length} matches, test ${test.rows.length} across ${test.matches.length} matches\n`,
 );
 
 if (split.test.length === 0) {
-  console.error('Jeu de test vide : il faut plus de matchs pour évaluer honnêtement.');
+  console.error('Test set is empty: more matches are needed to evaluate honestly.');
   process.exit(1);
 }
 
-// Repères, calculés sur les statistiques d'entraînement uniquement.
+// Baselines, computed from training statistics only.
 const trainStats = buildStats(split.train, collectMaps(rows));
 const ref = baselines(test.rows, test.matches, trainStats);
-console.log('Repères sur le jeu de test :');
+console.log('Baselines on the test set:');
 console.log(
-  `  prochain ban  — hasard ${(ref.nextBan.random * 100).toFixed(1)} %` +
-    ` | fréquence globale ${(ref.nextBan.frequency * 100).toFixed(1)} %`,
+  `  next ban      — random ${(ref.nextBan.random * 100).toFixed(1)} %` +
+    ` | global frequency ${(ref.nextBan.frequency * 100).toFixed(1)} %`,
 );
 console.log(
-  `  map finale    — hasard ${(ref.finalMap.random * 100).toFixed(1)} %` +
-    ` | map la moins bannie ${(ref.finalMap.frequency * 100).toFixed(1)} %\n`,
+  `  final map     — random ${(ref.finalMap.random * 100).toFixed(1)} %` +
+    ` | least banned map ${(ref.finalMap.frequency * 100).toFixed(1)} %\n`,
 );
 
 const everyFinal = Number(values['every-final']);
 const history = [];
 
-// La qualité oscille d'une époque à l'autre : la map finale résulte d'un produit
-// de probabilités sur six tours, donc de petits écarts de confiance se
-// composent. On conserve la meilleure époque plutôt que la dernière.
+// Quality oscillates from one epoch to another: the final map results from a
+// product of probabilities over six rounds, so small confidence gaps compound.
+// We keep the best epoch rather than the last one.
 let best = { score: -1, weights: null, epoch: 0, nextBan: 0, finalMap: 0 };
 
-// Le filtre d'entraînement se calcule sur l'ensemble d'entraînement lui-même :
-// un capitaine est « connu » s'il y apparaît suffisamment.
+// The training filter is computed on the training set itself: a captain is
+// "known" if they appear in it often enough.
 const trainMinCaptain = Number(values['train-min-captain']);
 const trainRows = filterByCaptainHistory(split.train, split.train, trainMinCaptain);
 if (trainMinCaptain > 0) {
   console.log(
-    `Entraînement restreint aux capitaines connus : ${trainRows.length} décisions sur ${split.train.length}\n`,
+    `Training restricted to known captains: ${trainRows.length} decisions out of ${split.train.length}\n`,
   );
 }
 
@@ -110,13 +110,13 @@ const model = train(trainRows, {
   lr: Number(values.lr),
   l2: Number(values.l2),
   onEpoch: (epoch, loss, current) => {
-    // Le suivi et le choix de l'époque se font sur la VALIDATION uniquement.
+    // Tracking and epoch selection happen on VALIDATION only.
     const next = nextBanAccuracy(current, val.rows);
     const final = finalMapAccuracy(current, val.matches);
     history.push({ epoch, nextBan: next.accuracy, finalMap: final.accuracy });
 
-    // On arbitre sur la map finale, l'objectif réel, en départageant par le
-    // prochain ban quand deux époques se valent.
+    // We arbitrate on the final map, the real objective, breaking ties with
+    // the next-ban accuracy when two epochs are close.
     const score = final.accuracy + 0.1 * next.accuracy;
     let marker = '';
     if (score > best.score) {
@@ -127,19 +127,19 @@ const model = train(trainRows, {
         nextBan: next.accuracy,
         finalMap: final.accuracy,
       };
-      marker = '  ← meilleure';
+      marker = '  ← best';
     }
 
     console.log(
-      `époque ${String(epoch).padStart(3)} — perte ${loss.toFixed(4)} | ` +
-        `prochain ban ${(next.accuracy * 100).toFixed(1)} % | ` +
-        `map finale ${(final.accuracy * 100).toFixed(1)} %${marker}`,
+      `epoch ${String(epoch).padStart(3)} — loss ${loss.toFixed(4)} | ` +
+        `next ban ${(next.accuracy * 100).toFixed(1)} % | ` +
+        `final map ${(final.accuracy * 100).toFixed(1)} %${marker}`,
     );
   },
 });
 
-// On repart des poids de la meilleure époque selon la validation, puis on ne
-// mesure qu'UNE FOIS sur le test — jamais consulté jusqu'ici.
+// We restore the weights of the best epoch according to validation, then
+// measure ONLY ONCE on the test set — never consulted until now.
 if (best.weights) model.weights = best.weights;
 const finalNext = nextBanAccuracy(model, test.rows);
 const finalMap = finalMapAccuracy(model, test.matches);
@@ -150,24 +150,24 @@ const sd = Math.sqrt(
   values_.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, values_.length),
 );
 console.log(
-  `\nValidation — map finale : moyenne ${(mean * 100).toFixed(1)} % ` +
-    `(écart-type ${(sd * 100).toFixed(1)}), meilleure époque ${best.epoch} à ${(best.finalMap * 100).toFixed(1)} %`,
+  `\nValidation — final map: mean ${(mean * 100).toFixed(1)} % ` +
+    `(std dev ${(sd * 100).toFixed(1)}), best epoch ${best.epoch} at ${(best.finalMap * 100).toFixed(1)} %`,
 );
-console.log('\n=== Résultat sur le jeu de test (mesure unique, non biaisée) ===');
+console.log('\n=== Result on the test set (single, unbiased measurement) ===');
 console.log(
-  `prochain ban : ${(finalNext.accuracy * 100).toFixed(1)} % ` +
-    `(hasard ${(ref.nextBan.random * 100).toFixed(1)} %, fréquence ${(ref.nextBan.frequency * 100).toFixed(1)} %)`,
+  `next ban : ${(finalNext.accuracy * 100).toFixed(1)} % ` +
+    `(random ${(ref.nextBan.random * 100).toFixed(1)} %, frequency ${(ref.nextBan.frequency * 100).toFixed(1)} %)`,
 );
 console.log(
-  `map finale   : ${(finalMap.accuracy * 100).toFixed(1)} % ` +
-    `(hasard ${(ref.finalMap.random * 100).toFixed(1)} %, moins bannie ${(ref.finalMap.frequency * 100).toFixed(1)} %)`,
+  `final map: ${(finalMap.accuracy * 100).toFixed(1)} % ` +
+    `(random ${(ref.finalMap.random * 100).toFixed(1)} %, least banned ${(ref.finalMap.frequency * 100).toFixed(1)} %)`,
 );
-console.log(`perte logarithmique : ${finalNext.logLoss.toFixed(4)}`);
+console.log(`log loss : ${finalNext.logLoss.toFixed(4)}`);
 
 const payload = serialize(model);
 writeFileSync(values.out, payload);
 writeFileSync(values['extension-out'], payload);
-console.log(`\nModèle écrit dans ${values.out} et ${values['extension-out']}`);
+console.log(`\nModel written to ${values.out} and ${values['extension-out']}`);
 console.log(
-  `L'extension embarque ces poids au prochain build : ${(payload.length / 1024).toFixed(1)} Ko.`,
+  `The extension will bundle these weights on the next build: ${(payload.length / 1024).toFixed(1)} KB.`,
 );

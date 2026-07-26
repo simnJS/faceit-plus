@@ -1,28 +1,28 @@
-// Client FACEIT du crawler.
+// FACEIT client for the crawler.
 //
-// Deux sources, volontairement :
-//   • API officielle (open.faceit.com/data/v4, clé requise) pour la découverte :
-//     joueurs, historiques, détails de match. C'est le cadre prévu pour ça.
-//   • Endpoint public de veto (www.faceit.com/api/democracy) pour la séquence de
-//     bans, que l'API officielle n'expose pas.
+// Two sources, deliberately:
+//   - Official API (open.faceit.com/data/v4, requires a key) for discovery:
+//     players, history, match details. This is the intended use case for it.
+//   - Public veto endpoint (www.faceit.com/api/democracy) for the ban
+//     sequence, which the official API does not expose.
 //
-// Un seul limiteur de débit partagé, une seule adresse IP, pas de rotation ni de
-// contournement : si tu tapes trop fort, ralentis avec --rps.
+// One shared rate limiter, one IP address, no rotation or workarounds:
+// if you're hitting it too hard, slow down with --rps.
 
 const OFFICIAL = 'https://open.faceit.com/data/v4';
 const PUBLIC = 'https://www.faceit.com/api';
 
 /**
- * Limiteur de débit sûr en parallèle : chaque appelant réserve son créneau de
- * façon synchrone avant d'attendre, ce qui évite que plusieurs requêtes
- * concurrentes partent en même temps.
+ * Rate limiter that's safe under concurrency: each caller reserves its slot
+ * synchronously before waiting, which keeps multiple concurrent requests
+ * from firing at the same time.
  *
- * L'API officielle annonce sa limite dans ses en-têtes de réponse :
- * « ratelimit-limit: 20, 20;w=1 », soit 20 requêtes par seconde glissante.
- * Le crawler se règle juste en dessous ; les 429 restent gérés par reprise.
+ * The official API advertises its limit in its response headers:
+ * "ratelimit-limit: 20, 20;w=1", i.e. 20 requests per rolling second.
+ * The crawler stays just under that; 429s are still handled via retry.
  */
 export class RateLimiter {
-  /** @param {number} rps requêtes par seconde */
+  /** @param {number} rps requests per second */
   constructor(rps) {
     this.minInterval = 1000 / Math.max(0.2, rps);
     this.next = 0;
@@ -31,7 +31,7 @@ export class RateLimiter {
   async wait() {
     const now = Date.now();
     const slot = Math.max(now, this.next);
-    this.next = slot + this.minInterval; // réservation immédiate
+    this.next = slot + this.minInterval; // reserve immediately
     const delay = slot - now;
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
   }
@@ -39,9 +39,9 @@ export class RateLimiter {
 
 export class FaceitClient {
   /**
-   * Deux limiteurs distincts : l'API officielle et l'endpoint public de veto
-   * n'ont pas le même plafond (mesuré : ~30 req/s contre nettement plus).
-   * Les faire partager un seul limiteur bridait inutilement l'ensemble.
+   * Two separate limiters: the official API and the public veto endpoint
+   * don't share the same ceiling (measured: ~30 req/s vs. significantly more).
+   * Making them share a single limiter would needlessly throttle both.
    *
    * @param {{apiKey: string, limiter: RateLimiter, vetoLimiter?: RateLimiter,
    *          onLog?: (msg: string) => void}} options
@@ -53,7 +53,7 @@ export class FaceitClient {
     this.log = onLog;
   }
 
-  /** Requête avec limitation de débit et reprise sur 429/5xx. */
+  /** Rate-limited request with retry on 429/5xx. */
   async #request(url, { auth = true, attempt = 1 } = {}) {
     await (auth ? this.limiter : this.vetoLimiter).wait();
     const headers = { Accept: 'application/json' };
@@ -71,13 +71,13 @@ export class FaceitClient {
     if (res.status === 429 || res.status >= 500) {
       if (attempt >= 5) return null;
       const wait = Number(res.headers.get('retry-after')) * 1000 || 2000 * attempt;
-      this.log(`  ${res.status} — pause de ${Math.round(wait / 1000)} s`);
+      this.log(`  ${res.status} — pausing for ${Math.round(wait / 1000)}s`);
       await new Promise((r) => setTimeout(r, wait));
       return this.#request(url, { auth, attempt: attempt + 1 });
     }
     if (res.status === 404) return null;
     if (!res.ok) {
-      this.log(`  ${res.status} sur ${url.replace(/\?.*/, '')}`);
+      this.log(`  ${res.status} on ${url.replace(/\?.*/, '')}`);
       return null;
     }
     const type = res.headers.get('content-type') || '';
@@ -85,20 +85,20 @@ export class FaceitClient {
     return res.json();
   }
 
-  /** Profil d'un joueur à partir de son pseudo. */
+  /** Player profile looked up by nickname. */
   async playerByNickname(nickname) {
     const url = `${OFFICIAL}/players?nickname=${encodeURIComponent(nickname)}&game=cs2`;
     return this.#request(url);
   }
 
-  /** Profil complet d'un joueur (pays, niveau, elo) à partir de son identifiant. */
+  /** Full player profile (country, level, elo) looked up by id. */
   async playerById(playerId) {
     return this.#request(`${OFFICIAL}/players/${encodeURIComponent(playerId)}`);
   }
 
   /**
-   * Historique de matchs d'un joueur (l'API a connu deux chemins selon les
-   * versions : on tente `history` puis `matches`).
+   * A player's match history (the API has had two paths across versions:
+   * try `history`, then fall back to `matches`).
    */
   async playerHistory(playerId, { offset = 0, limit = 100 } = {}) {
     const query = `game=cs2&offset=${offset}&limit=${limit}`;
@@ -113,8 +113,8 @@ export class FaceitClient {
   }
 
   /**
-   * Séquence de veto d'un match. Endpoint public : pas de clé, mais on le passe
-   * par le même limiteur de débit.
+   * A match's veto sequence. Public endpoint: no key needed, but it still
+   * goes through the same rate limiter.
    */
   async matchVeto(matchId) {
     const json = await this.#request(

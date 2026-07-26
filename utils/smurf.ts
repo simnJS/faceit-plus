@@ -1,24 +1,24 @@
-// Détection de comptes anormaux (« smurfs »), volontairement FACTUELLE : on ne
-// pose pas d'étiquette définitive, on signale une combinaison de chiffres
-// inhabituelle et on affiche ces chiffres.
+// Detection of abnormal accounts ("smurfs"), deliberately FACTUAL: we don't
+// slap a definitive label on the account, we flag an unusual combination of
+// numbers and display those numbers.
 //
-// Le signal décisif n'est PAS le niveau bas en lui-même (un level 1 à 0.5 de K/D
-// est simplement un débutant), mais l'ÉCART entre le niveau affiché et la
-// performance réelle : un compte qui domine très au-dessus de ce que son niveau
-// laisse attendre, surtout s'il est récent et peu joué.
+// The deciding signal is NOT the low skill level by itself (a level 1 with a
+// 0.5 K/D is simply a beginner), but the GAP between the displayed level and
+// the actual performance: an account that dominates well above what its level
+// implies, especially if it is recent and lightly played.
 
 import type { PlayerAnalysis } from './analysis-cache';
 import type { RecentForm } from './faceit-api';
 
 export interface SmurfResult {
   flagged: boolean;
-  score: number; // 0-100, indicatif
+  score: number; // 0-100, indicative
   ageDays: number | null;
   matches: number;
   winrate: number;
   kd: number;
   hs: number;
-  /** Écart entre le K/D réel et celui attendu au niveau du joueur. */
+  /** Gap between the actual K/D and the K/D expected at the player's level. */
   kdGap: number | null;
   skillLevel: number | null;
   recent: RecentForm | null;
@@ -32,7 +32,7 @@ export interface PlayerContext {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** K/D typique par niveau FACEIT (le matchmaking équilibre autour de 1). */
+/** Typical K/D per FACEIT level (matchmaking balances around 1). */
 const EXPECTED_KD: Record<number, number> = {
   1: 0.8,
   2: 0.85,
@@ -59,27 +59,28 @@ export function computeSmurf(
       ? Math.max(0, Math.round((Date.now() - accountCreatedAt) / DAY_MS))
       : null;
 
-  // Performance de référence : la forme récente prime si l'échantillon suffit,
-  // car un smurf « réchauffe » un compte dont le lifetime est encore neutre.
+  // Reference performance: recent form takes priority once the sample is large
+  // enough, because a smurf "warms up" an account whose lifetime stats are
+  // still neutral.
   const effectiveKd = recent && recent.games >= 15 ? Math.max(kd, recent.kd) : kd;
   const expected = skillLevel != null ? EXPECTED_KD[skillLevel] : undefined;
   const kdGap = expected != null ? effectiveKd - expected : null;
 
   let score = 0;
 
-  // 1) Surperformance par rapport au niveau affiché — le signal le plus parlant.
+  // 1) Overperformance relative to the displayed level — the strongest signal.
   if (kdGap != null) {
     if (kdGap >= 0.4) score += 40;
     else if (kdGap >= 0.25) score += 28;
     else if (kdGap >= 0.15) score += 14;
   }
 
-  // 2) Domination brute
+  // 2) Raw dominance
   if (winrate >= 65) score += 25;
   else if (winrate >= 60) score += 16;
   else if (winrate >= 55) score += 6;
 
-  // 3) Compte neuf / peu joué
+  // 3) New / lightly played account
   if (matches < 50) score += 20;
   else if (matches < 100) score += 12;
   else if (matches < 200) score += 4;
@@ -89,15 +90,15 @@ export function computeSmurf(
     else if (ageDays < 180) score += 8;
   }
 
-  // 4) Précision anormale
+  // 4) Abnormal accuracy
   if (hs >= 60) score += 10;
   else if (hs >= 50) score += 4;
 
-  // 5) Montée en flèche : la forme récente dépasse nettement le lifetime.
+  // 5) Sharp spike: recent form clearly exceeds the lifetime stats.
   if (recent && recent.games >= 15 && recent.kd - kd >= 0.3) score += 12;
 
-  // Un vétéran très fort n'est pas un smurf : il faut soit un compte peu joué,
-  // soit une performance franchement décorrélée du niveau affiché.
+  // A very strong veteran is not a smurf: we need either a lightly played
+  // account, or a performance clearly decorrelated from the displayed level.
   const flagged = score >= 55 && (matches < 250 || (kdGap ?? 0) >= 0.25);
 
   return {

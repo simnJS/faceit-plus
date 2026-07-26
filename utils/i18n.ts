@@ -1,6 +1,6 @@
-// Traductions de FACEIT+ (français / anglais).
-// La langue suit le réglage utilisateur ; en mode « auto » elle est déduite de
-// l'URL FACEIT (/fr/, /en/…) puis de la langue du navigateur.
+// FACEIT+ translations (French / English).
+// The language follows the user's setting; in "auto" mode it is inferred from
+// the FACEIT URL (/fr/, /en/…) and then from the browser's language.
 
 export type Lang = 'fr' | 'en';
 export type LangSetting = 'auto' | Lang;
@@ -131,7 +131,7 @@ const MESSAGES = {
 export type MessageKey = keyof (typeof MESSAGES)['fr'];
 export type Translator = (key: MessageKey, params?: Record<string, string | number>) => string;
 
-/** Langue déduite de l'URL FACEIT puis du navigateur. */
+/** Language inferred from the FACEIT URL and then from the browser. */
 export function detectLang(): Lang {
   const fromPath = location.pathname.match(/^\/([a-z]{2})\//)?.[1];
   if (fromPath === 'fr') return 'fr';

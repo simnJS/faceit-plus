@@ -1,12 +1,12 @@
-// Enrichissement des profils joueurs : le roster d'un match ne contient pas le
-// pays, il faut une requête par joueur. On la fait à part pour ne pas ralentir le
-// crawl, et une seule fois par joueur puisque le pays ne change pas.
+// Player profile enrichment: a match roster doesn't include the country, so
+// it takes one request per player. This runs separately so it doesn't slow
+// down the crawl, and only once per player since the country doesn't change.
 //
 //   npm run crawl:enrich -- --limit 2000
 //
-// Note : l'elo récupéré ici est celui d'AUJOURD'HUI, pas celui du match. Il est
-// stocké à titre indicatif mais ne doit pas servir de variable au modèle — pour
-// ça, `match_players.level` est capturé au moment du match, lui.
+// Note: the elo fetched here is TODAY's elo, not the match's. It's stored for
+// reference only and must not be used as a model feature — for that,
+// `match_players.level` is captured at match time instead.
 
 import { parseArgs } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,7 +15,7 @@ import { FaceitClient, RateLimiter } from './lib/faceit.mjs';
 try {
   process.loadEnvFile();
 } catch {
-  // pas de .env : variables du shell
+  // no .env file: fall back to shell env vars
 }
 
 const { values } = parseArgs({
@@ -28,7 +28,7 @@ const { values } = parseArgs({
 
 const apiKey = process.env.FACEIT_API_KEY;
 if (!apiKey) {
-  console.error('FACEIT_API_KEY manquante : renseigne-la dans .env.');
+  console.error('FACEIT_API_KEY is missing: set it in .env.');
   process.exit(1);
 }
 
@@ -49,11 +49,11 @@ const update = db.prepare(
 
 let stopping = false;
 process.on('SIGINT', () => {
-  console.log('\nArrêt demandé…');
+  console.log('\nStop requested...');
   stopping = true;
 });
 
-console.log(`${pending.length} joueur(s) à enrichir.`);
+console.log(`${pending.length} player(s) to enrich.`);
 let done = 0;
 let failed = 0;
 
@@ -61,7 +61,7 @@ for (const player of pending) {
   if (stopping) break;
   const profile = await client.playerById(player.id);
   if (!profile?.player_id) {
-    // Compte supprimé ou introuvable : on marque pour ne pas y revenir sans cesse.
+    // Deleted or missing account: mark it so we don't keep retrying it.
     update.run('??', null, null, player.id);
     failed += 1;
     continue;
@@ -77,5 +77,5 @@ for (const player of pending) {
 }
 
 const remaining = db.prepare('SELECT COUNT(*) AS n FROM players WHERE country IS NULL').all()[0].n;
-console.log(`Terminé : ${done} enrichis, ${failed} introuvables, ${remaining} restants.`);
+console.log(`Done: ${done} enriched, ${failed} not found, ${remaining} remaining.`);
 db.close();

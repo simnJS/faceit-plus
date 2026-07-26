@@ -1,14 +1,15 @@
-// Estimation du PLAFOND atteignable, pour savoir si l'effort en vaut la peine.
+// Estimates the reachable CEILING, to know whether the effort is worth it.
 //
 //   npm run model:ceiling
 //
-// Principe : on triche délibérément. Chaque capitaine se voit attribuer ses
-// habitudes réelles calculées sur TOUTES ses décisions, y compris celles qu'on
-// cherche à prédire. C'est impossible en pratique, mais ça donne la borne haute
-// de ce qu'un modèle fondé sur l'habitude du capitaine peut espérer.
+// Principle: we deliberately cheat. Each captain is credited with their real
+// habits computed over ALL of their decisions, including the ones we are
+// trying to predict. This is impossible in practice, but it gives the upper
+// bound of what a model based on captain habits can hope to achieve.
 //
-// L'écart entre cette borne et le modèle actuel dit s'il reste de la marge — et
-// l'écart entre cette borne et 100 % mesure la part d'imprévisible d'un veto.
+// The gap between this bound and the current model shows whether there is
+// room left — and the gap between this bound and 100% measures the share of
+// unpredictability in a veto.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -28,7 +29,7 @@ const rows = readFileSync(values.data, 'utf8')
 
 const minDecisions = Number(values['min-decisions']);
 
-// Habitudes réelles de chaque capitaine : bans et occasions, par map.
+// Real habits of each captain: bans and opportunities, per map.
 const captain = new Map();
 for (const row of rows) {
   const id = row.banner_leader;
@@ -45,7 +46,7 @@ const rate = (entry, map) => {
   return opportunities > 0 ? (entry.ban[map] ?? 0) / opportunities : 0;
 };
 
-// Fréquence globale, pour le repère « sans connaissance du capitaine ».
+// Global frequency, for the "without knowledge of the captain" baseline.
 const globalBan = {};
 const globalOpp = {};
 for (const row of rows) {
@@ -66,30 +67,30 @@ const eligible = rows.filter(
 for (const row of eligible) {
   const entry = captain.get(row.banner_leader);
 
-  // Meilleure prédiction possible connaissant parfaitement le capitaine.
+  // Best possible prediction knowing the captain perfectly.
   const best = row.remaining.reduce((a, b) => (rate(entry, b) > rate(entry, a) ? b : a));
   if (best === row.banned) oracleHits += 1;
 
   const bestGlobal = row.remaining.reduce((a, b) => (globalRate(b) > globalRate(a) ? b : a));
   if (bestGlobal === row.banned) globalHits += 1;
 
-  // Entropie de la décision, normalisée : mesure la part d'imprévisible.
+  // Normalized entropy of the decision: measures the share of unpredictability.
   const weights = row.remaining.map((map) => Math.max(1e-9, rate(entry, map)));
   const sum = weights.reduce((a, b) => a + b, 0);
   const probs = weights.map((w) => w / sum);
   const entropy = -probs.reduce((a, p) => a + p * Math.log(p), 0);
-  entropySum += entropy / Math.log(row.remaining.length); // 0 = déterministe, 1 = au hasard
+  entropySum += entropy / Math.log(row.remaining.length); // 0 = deterministic, 1 = random
   total += 1;
 }
 
-console.log(`Décisions retenues : ${total} (capitaines avec ≥ ${minDecisions} décisions)\n`);
-console.log(`Plafond « capitaine parfaitement connu » : ${((oracleHits / total) * 100).toFixed(1)} %`);
-console.log(`Repère « fréquence globale »             : ${((globalHits / total) * 100).toFixed(1)} %`);
+console.log(`Decisions kept: ${total} (captains with >= ${minDecisions} decisions)\n`);
+console.log(`Ceiling "perfectly known captain": ${((oracleHits / total) * 100).toFixed(1)} %`);
+console.log(`Baseline "global frequency"      : ${((globalHits / total) * 100).toFixed(1)} %`);
 console.log(
-  `Part d'imprévisible dans la décision      : ${((entropySum / total) * 100).toFixed(1)} % ` +
-    `(0 % = capitaine parfaitement prévisible, 100 % = choix au hasard)`,
+  `Share of unpredictability in the decision: ${((entropySum / total) * 100).toFixed(1)} % ` +
+    `(0% = perfectly predictable captain, 100% = random choice)`,
 );
 console.log(
-  `\nÀ comparer au modèle actuel. L'écart avec le plafond dit ce qu'il reste à gagner ;\n` +
-    `le plafond lui-même dit ce qu'aucun modèle ne pourra dépasser.`,
+  `\nCompare this to the current model. The gap with the ceiling shows how much room is left;\n` +
+    `the ceiling itself shows what no model will ever exceed.`,
 );

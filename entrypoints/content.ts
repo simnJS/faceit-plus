@@ -18,6 +18,7 @@ import { resolveProfiles } from '@/utils/profile-cache';
 import { resolveMapStats } from '@/utils/map-stats-cache';
 import { resolvePremierRatings, type PremierInfo } from '@/utils/premier';
 import { createPremierBadge } from '@/utils/premier-badge';
+import { findPartyCards, isNearViewport } from '@/utils/party-cards';
 import { computeTeamMapStats, type TeamMapStat } from '@/utils/team-map-stats';
 import { resolveCaptainBanRates } from '@/utils/ban-rate';
 import {
@@ -44,18 +45,18 @@ const SMURF_CLASS = 'faceitplus-smurf';
 const STATS_MARKER = 'faceitPlusStats';
 const STATS_CLASS = 'faceitplus-mapstats';
 
-const MIN_GAMES = 3; // en dessous, l'échantillon n'est pas parlant
-const POLL_MS = 4000; // rafraîchissement du pool pendant le veto
+const MIN_GAMES = 3; // below this, the sample size isn't meaningful
+const POLL_MS = 4000; // pool refresh interval during veto
 
 export default defineContentScript({
   matches: ['*://*.faceit.com/*'],
   main(ctx) {
-    // En dev : quand l'extension se recharge (rebuild WXT), l'ancien content
-    // script est invalidé → on recharge la page pour injecter la nouvelle version.
+    // Dev only: when the extension reloads (WXT rebuild), the old content
+    // script is invalidated, so we reload the page to inject the new version.
     if (import.meta.env.DEV) {
       ctx.onInvalidated(() => window.location.reload());
-      // Le service worker MV3 s'endort après ~30s et perd sa connexion au
-      // serveur de dev (donc plus de hot reload). Chaque ping le réveille.
+      // The MV3 service worker goes idle after ~30s and loses its connection
+      // to the dev server (so hot reload stops working). Each ping wakes it up.
       ctx.setInterval(() => {
         browser.runtime.sendMessage({ type: 'faceitplus:ping' }).catch(() => {});
       }, 10_000);
@@ -64,11 +65,18 @@ export default defineContentScript({
     let currentRoomId: string | null = null;
     let countryByNickname = new Map<string, string>();
     let premierByNickname = new Map<string, PremierInfo>();
+    // Premier ratings for party cards (outside the room): kept separate and
+    // persisted across pages — the SPA constantly switches between club and
+    // matchmaking, so there's no point re-requesting the same players.
+    const partyPremierByNickname = new Map<string, PremierInfo>();
+    const partyRequested = new Set<string>();
+    const partyQueue = new Set<string>();
+    let partyFlushTimer: number | null = null;
     let statsByNickname = new Map<string, MapStat[]>();
     let roleByNickname = new Map<string, RoleResult>();
     let smurfByNickname = new Map<string, SmurfResult>();
     let createdAtByNickname = new Map<string, number | null>();
-    // Stats d'équipe par map (pour les overlays de veto)
+    // Per-map team stats (used by the veto overlays)
     let teamStats: { f1: Map<string, TeamMapStat>; f2: Map<string, TeamMapStat> } | null = null;
     let banRateByMapId: Map<string, number> | null = null;
     let banRateCounts: Record<string, { drops: number; opportunities: number }> | null = null;
@@ -76,7 +84,7 @@ export default defineContentScript({
     let vetoDiagnosed = false;
     let adviceLogged = false;
 
-    // Réglages : chargés au démarrage, mis à jour en direct depuis le panneau.
+    // Settings: loaded at startup, updated live from the config panel.
     let settings: Settings = DEFAULT_SETTINGS;
     let t: Translator = createTranslator(DEFAULT_SETTINGS.lang);
     void getSettings().then((s) => {
@@ -87,13 +95,13 @@ export default defineContentScript({
     const unwatchSettings = watchSettings((s) => {
       settings = s;
       t = createTranslator(s.lang);
-      resetInjected(); // ré-applique les toggles d'affichage et la langue
+      resetInjected(); // re-apply display toggles and language
       applyEnrichment();
     });
 
     mountConfigPanel();
 
-    // Retire nos injections pour que les toggles se ré-appliquent proprement.
+    // Remove our injections so the toggles can re-apply cleanly.
     const resetInjected = () => {
       document
         .querySelectorAll(
@@ -112,11 +120,11 @@ export default defineContentScript({
       });
     };
 
-    // Pool complet (le plus grand vu depuis l'entrée : ne rétrécit jamais) et
-    // maps encore en jeu (rétrécit à chaque ban). Les bannies = full − active.
+    // Full pool (the largest seen since entering: never shrinks) and maps
+    // still in play (shrinks with each ban). Banned = full − active.
     let fullPool: PoolMap[] = [];
     let activeIds = new Set<string>();
-    let expanded = false; // état du bouton « tout voir », partagé par toutes les cards
+    let expanded = false; // state of the "show all" button, shared by all cards
     let pollHandle: number | null = null;
 
     const stopPolling = () => {
@@ -126,15 +134,13 @@ export default defineContentScript({
       }
     };
 
-    // FACEIT utilise styled-components : les hash de classes changent à chaque
-    // déploiement mais les préfixes sémantiques (Nickname__Name, ListContentPlayer__…)
-    // sont stables.
+    // FACEIT uses styled-components: class hashes change on every deploy, but
+    // the semantic prefixes (Nickname__Name, ListContentPlayer__…) stay stable.
     const applyEnrichment = () => {
       const nameEls = document.querySelectorAll<HTMLElement>('[class*="Nickname__Name"]');
       for (const el of nameEls) {
         const nickname = el.textContent?.trim() ?? '';
 
-        // Drapeau à côté du pseudo
         if (settings.flags && !el.dataset[FLAG_MARKER]) {
           const country = countryByNickname.get(nickname);
           if (country) {
@@ -143,7 +149,6 @@ export default defineContentScript({
           }
         }
 
-        // Signalement de compte atypique, après le pseudo
         if (settings.smurf && !el.dataset[SMURF_MARKER]) {
           const smurf = smurfByNickname.get(nickname);
           if (smurf) {
@@ -154,29 +159,30 @@ export default defineContentScript({
 
         const card = el.closest<HTMLElement>('[class*="ListContentPlayer__Background"]');
 
-        // Badge rank CS2 Premier devant le niveau FACEIT (no-op si indisponible)
+        // CS2 Premier badge before the FACEIT level icon (no-op if unavailable)
         if (settings.premier && card) {
           placePremierBadge(card, premierByNickname.get(nickname)?.rating);
         }
 
-        // Bandeau sous la card : rôle estimé + K/D par map
         if (card && !card.dataset[STATS_MARKER]) {
           const stats = settings.mapStats ? statsByNickname.get(nickname) : undefined;
           const role = settings.roles ? roleByNickname.get(nickname) : undefined;
           const showStats = Boolean(stats) && fullPool.length > 0;
           if (showStats || role) {
             card.dataset[STATS_MARKER] = '1';
-            // La card FACEIT a une hauteur fixe : on la laisse grandir pour que
-            // la section reste à l'intérieur du fond sombre arrondi.
+            // The FACEIT card has a fixed height: we let it grow so the
+            // section stays inside the rounded dark background.
             card.style.height = 'auto';
             card.appendChild(createPlayerStrip(showStats ? stats! : null, role ?? null));
           }
         }
       }
 
+      if (settings.premier) applyPartyPremier();
+
       if (settings.vetoStats) applyVetoBadges();
 
-      // Actions automatiques (idempotentes, garde par attribut DOM)
+      // Automatic actions (idempotent, guarded via DOM attribute)
       if (settings.autoAccept.enabled) {
         runAutoAccept(settings.autoAccept.delaySeconds, t);
       }
@@ -189,12 +195,56 @@ export default defineContentScript({
       }
     };
 
-    // Choix de la map à bannir selon le mode configuré.
+    // Premier badge under the FACEIT level for party cards (matchmaking, club
+    // parties…). Nicknames are read straight from the DOM: no API roster here.
+    const applyPartyPremier = () => {
+      for (const { card, nickname, anchor } of findPartyCards()) {
+        if (card.querySelector(':scope > .faceitplus-premier-badge')) continue;
+        const known = partyPremierByNickname.get(nickname);
+        if (known) {
+          const rating = known.rating;
+          if (rating == null || !Number.isFinite(rating) || rating <= 0) continue; // no public Premier rating
+          anchor.insertAdjacentElement('afterend', createPremierBadge(rating));
+        } else if (isNearViewport(card)) {
+          queuePartyPremier(nickname);
+        }
+      }
+    };
+
+    // Nicknames to resolve are batched: a card appearing often brings four
+    // others along within the same frame.
+    const queuePartyPremier = (nickname: string) => {
+      if (partyRequested.has(nickname)) return;
+      partyRequested.add(nickname);
+      partyQueue.add(nickname);
+      if (partyFlushTimer !== null) return;
+      partyFlushTimer = ctx.setTimeout(flushPartyPremier, 250) as unknown as number;
+    };
+
+    const flushPartyPremier = () => {
+      partyFlushTimer = null;
+      const batch = [...partyQueue];
+      partyQueue.clear();
+      if (batch.length === 0) return;
+      void resolvePremierRatings(batch, (nickname, info) => {
+        // csstats is serialized on the background side: we place each badge
+        // as soon as it's known instead of waiting for the whole batch.
+        partyPremierByNickname.set(nickname, info);
+        scheduleApply();
+      })
+        .then((resolved) => {
+          const n = [...resolved.values()].filter((v) => v.rating != null).length;
+          console.log(`[FACEIT+] Premier (party): ${n}/${batch.length} players`);
+        })
+        .catch((e) => console.warn('[FACEIT+] Premier (party) unavailable:', e));
+    };
+
+    // Choose which map to ban based on the configured mode.
     const chooseBanTarget = (candidates: VetoTileCandidate[]): VetoTileCandidate | null => {
       if (settings.autoVeto.mode === 'winrate') {
         const myStats =
           selfFaction === 'faction2' ? teamStats?.f2 : selfFaction === 'faction1' ? teamStats?.f1 : null;
-        if (!myStats) return null; // données pas prêtes : on ne fait rien
+        if (!myStats) return null; // data not ready yet: do nothing
         const idByNormalized = new Map(fullPool.map((m) => [normalizeMapName(m.name), m.id]));
         let worst: VetoTileCandidate | null = null;
         let worstWinrate = Number.POSITIVE_INFINITY;
@@ -208,7 +258,7 @@ export default defineContentScript({
         }
         return worst;
       }
-      // mode 'order' : la première map de la liste encore disponible est bannie
+      // mode 'order': the first still-available map in the list gets banned
       for (const id of settings.autoVeto.order) {
         const normalized = normalizeMapName(id);
         const hit = candidates.find((c) => c.normalized === normalized);
@@ -217,33 +267,33 @@ export default defineContentScript({
       return null;
     };
 
-    // Overlays sur les tuiles de veto : winrates d'équipe, ban rate, et conseils.
+    // Overlays on the veto tiles: team winrates, ban rate, and advice.
     const applyVetoBadges = () => {
       if (!teamStats) return;
       const cards = findVetoCards();
       if (cards.length === 0) {
-        // Rien trouvé : on relève l'état de la page une fois par salle, pour
-        // pouvoir corriger les sélecteurs sur pièces plutôt qu'au jugé.
+        // Nothing found: log the page state once per room so the selectors
+        // can be fixed based on evidence instead of guesswork.
         if (!vetoDiagnosed) {
           vetoDiagnosed = true;
-          console.log('[FACEIT+] veto introuvable — relevé de la page :', diagnoseVeto());
+          console.log('[FACEIT+] veto not found — page snapshot:', diagnoseVeto());
         }
         return;
       }
       const nameToId = new Map(fullPool.map((m) => [normalizeMapName(m.name), m.id]));
 
-      // Notre camp / camp adverse selon la faction du joueur (par défaut faction1).
+      // Our side / opposing side based on the player's faction (defaults to faction1).
       const mine = selfFaction === 'faction2' ? teamStats.f2 : teamStats.f1;
       const theirs = selfFaction === 'faction2' ? teamStats.f1 : teamStats.f2;
 
-      // Conseil de ban + map probable, recalculés à chaque évolution du veto.
+      // Ban advice + likely map, recomputed every time the veto changes.
       let adviceMapId: string | null = null;
       let adviceDelta = 0;
       let adviceFromModel = false;
       let likelyByMapId: Map<string, number> | null = null;
       const activePool = fullPool.filter((m) => activeIds.has(m.id));
       if (settings.vetoAdvice && activePool.length > 1) {
-        // Un bouton de ban actif signifie que FACEIT attend notre capitaine.
+        // An active ban button means FACEIT is waiting on our captain.
         const ourTurn = findVetoCards().some((c) => !isCardBanned(c));
         const context = {
           pool: activePool,
@@ -261,17 +311,17 @@ export default defineContentScript({
         }
         if (!adviceLogged) {
           adviceLogged = true;
-          console.log('[FACEIT+] conseil de veto :', {
-            modèle: hasTrainedModel ? 'entraîné' : 'règle simple',
-            mapsEnJeu: activePool.map((m) => m.id),
-            notreTour: ourTurn,
-            capitaineAdverseConnu: Boolean(banRateCounts),
-            recommandation: reco ?? 'aucune',
+          console.log('[FACEIT+] veto advice:', {
+            model: hasTrainedModel ? 'trained' : 'simple rule',
+            mapsInPlay: activePool.map((m) => m.id),
+            ourTurn,
+            opposingCaptainKnown: Boolean(banRateCounts),
+            recommendation: reco ?? 'none',
           });
         }
         likelyByMapId = predictFinalMap(context, ourTurn);
       }
-      // On ne signale que la map la plus probable, et seulement si elle se détache.
+      // Only the single most likely map is flagged, and only if it stands out.
       let likelyMapId: string | null = null;
       if (likelyByMapId) {
         let best: [string, number] | null = null;
@@ -287,7 +337,7 @@ export default defineContentScript({
         const banAdvice =
           mapId === adviceMapId ? { delta: adviceDelta, fromModel: adviceFromModel } : null;
         const likelyPercent = mapId === likelyMapId ? (likelyByMapId?.get(mapId) ?? null) : null;
-        // Signature : le badge est refait dès qu'une des valeurs affichées change.
+        // Signature: the badge gets rebuilt whenever one of the displayed values changes.
         const signature = [
           mine.get(mapId)?.winrate ?? '',
           theirs.get(mapId)?.winrate ?? '',
@@ -313,15 +363,15 @@ export default defineContentScript({
           badge.dataset.sig = signature;
           entry.card.appendChild(badge);
         }
-        // Map bannie par FACEIT → badge estompé
+        // Map banned by FACEIT -> badge dimmed
         const banned = isCardBanned(entry);
         badge.style.opacity = banned ? '0.15' : '1';
         badge.style.filter = banned ? 'grayscale(100%)' : '';
       }
     };
 
-    // Retire les bandeaux et signalements puis les réinjecte (nouveau pool, données
-    // arrivées après coup, dépliage…).
+    // Removes the strips and flags then re-injects them (new pool, data
+    // arriving late, expand toggle…).
     const rerenderStrips = () => {
       document.querySelectorAll(`.${STATS_CLASS}, .${SMURF_CLASS}`).forEach((n) => n.remove());
       document
@@ -333,7 +383,7 @@ export default defineContentScript({
       applyEnrichment();
     };
 
-    // Un seul passage par frame, même si le SPA mute le DOM en rafale.
+    // Only one pass per frame, even if the SPA mutates the DOM in bursts.
     let applyScheduled = false;
     const scheduleApply = () => {
       if (applyScheduled) return;
@@ -344,15 +394,15 @@ export default defineContentScript({
       });
     };
 
-    // `pool` = maps encore votables (rétrécit avec les bans), `picked` = map(s) finale(s).
-    // Actif = la map pick si le veto est conclu, sinon les maps restantes.
-    // fullPool (« tout voir ») = pool CS2 courant + tout ce qui a été vu : garanti
-    // complet même si la room est déjà passé le veto (entities réduites).
+    // `pool` = maps still votable (shrinks with bans), `picked` = final map(s).
+    // Active = the picked map if the veto is done, otherwise the remaining maps.
+    // fullPool ("show all") = current CS2 pool + everything ever seen: stays
+    // complete even if the room has already moved past the veto (entities shrunk).
     const updatePool = (pool: PoolMap[], picked: string[]) => {
       const union = new Map<string, PoolMap>();
-      for (const m of CS2_MAP_POOL) union.set(m.id, m); // base : 7 maps, dans l'ordre du pool
-      for (const m of fullPool) union.set(m.id, m); // conserve ce qui a déjà été vu
-      for (const m of pool) union.set(m.id, m); // entities à jour (noms officiels)
+      for (const m of CS2_MAP_POOL) union.set(m.id, m); // base: 7 maps, in pool order
+      for (const m of fullPool) union.set(m.id, m); // keep what's already been seen
+      for (const m of pool) union.set(m.id, m); // up-to-date entities (official names)
       for (const id of picked) if (!union.has(id)) union.set(id, { id, name: prettyMapName(id) });
       fullPool = [...union.values()];
 
@@ -366,12 +416,12 @@ export default defineContentScript({
       try {
         const match = await fetchMatch(matchId);
         const roster = getMatchRoster(match);
-        // Cœur (rapide, endpoints FACEIT) : drapeaux + K/D par map.
+        // Core (fast, FACEIT endpoints): flags + K/D per map.
         const [profiles, statsByUid] = await Promise.all([
           resolveProfiles(roster.map((p) => p.nickname)),
           resolveMapStats(roster.map((p) => p.id)),
         ]);
-        if (currentRoomId !== matchId) return; // parti ailleurs entre-temps
+        if (currentRoomId !== matchId) return; // navigated elsewhere in the meantime
 
         updatePool(getMapPool(match), getPickedMapIds(match));
         countryByNickname = new Map(
@@ -388,7 +438,7 @@ export default defineContentScript({
             .filter((pair): pair is [string, MapStat[]] => Boolean(pair[1])),
         );
 
-        // Stats d'équipe par map pour les overlays de veto
+        // Per-map team stats for the veto overlays
         const mapsByUid = new Map([...statsByUid].map(([uid, s]) => [uid, s.maps]));
         const factions = getFactionRosters(match);
         teamStats = {
@@ -397,12 +447,12 @@ export default defineContentScript({
         };
 
         console.log(
-          `[FACEIT+] cœur prêt (${countryByNickname.size} drapeaux, ${statsByNickname.size} rosters, ${fullPool.length} maps)`,
+          `[FACEIT+] core ready (${countryByNickname.size} flags, ${statsByNickname.size} rosters, ${fullPool.length} maps)`,
         );
         applyEnrichment();
 
-        // Ban rate du capitaine adverse (jusqu'à ~100 requêtes, cache 6 h) :
-        // découplé, n'affiche les % que quand c'est prêt.
+        // Opposing captain's ban rate (up to ~100 requests, 6h cache):
+        // decoupled, only shows percentages once ready.
         void (async () => {
           const selfId = await fetchSelfId();
           if (!selfId) return;
@@ -412,7 +462,7 @@ export default defineContentScript({
               ? 'faction2'
               : null;
           const opposingLeader = getOpposingLeader(match, selfId);
-          if (!opposingLeader) return; // spectateur ou leaders absents
+          if (!opposingLeader) return; // spectator or missing leaders
           const rates = await resolveCaptainBanRates(
             opposingLeader,
             fullPool.map((m) => m.id),
@@ -421,13 +471,13 @@ export default defineContentScript({
           banRateByMapId = new Map(Object.entries(rates.probByMap));
           banRateCounts = rates.counts;
           console.log(
-            `[FACEIT+] ban rate prêt (${rates.datasetSize} matchs de capitaine analysés)`,
+            `[FACEIT+] ban rate ready (${rates.datasetSize} captain matches analyzed)`,
           );
           applyEnrichment();
         })();
 
-        // Analyse lifetime (1 requête par joueur, cache 24 h) : rôle + signaux de
-        // compte suspect. Découplé pour ne pas retarder l'affichage principal.
+        // Lifetime analysis (1 request per player, 24h cache): role + suspicious
+        // account signals. Decoupled so it doesn't delay the main display.
         void resolveAnalysis(roster.map((p) => p.id))
           .then((analysisByUid) => {
             if (currentRoomId !== matchId) return;
@@ -446,31 +496,31 @@ export default defineContentScript({
             }
             roleByNickname = roles;
             smurfByNickname = smurfs;
-            if (smurfs.size > 0) console.log(`[FACEIT+] ${smurfs.size} compte(s) atypique(s)`);
-            rerenderStrips(); // les bandeaux déjà posés doivent intégrer le rôle
+            if (smurfs.size > 0) console.log(`[FACEIT+] ${smurfs.size} atypical account(s)`);
+            rerenderStrips(); // strips already rendered need to pick up the role
           })
-          .catch((e) => console.warn('[FACEIT+] analyse indisponible :', e));
+          .catch((e) => console.warn('[FACEIT+] analysis unavailable:', e));
 
-        // Premier (source externe Leetify, plus lente/faillible) : découplé, ne
-        // bloque jamais l'affichage du reste.
+        // Premier (external Leetify source, slower/less reliable): decoupled,
+        // never blocks rendering the rest.
         void resolvePremierRatings(roster.map((p) => p.nickname))
           .then((premier) => {
             if (currentRoomId !== matchId) return;
             premierByNickname = premier;
             const n = [...premier.values()].filter((v) => v.rating != null).length;
-            console.log(`[FACEIT+] Premier : ${n}/${roster.length} joueurs`);
+            console.log(`[FACEIT+] Premier: ${n}/${roster.length} players`);
             applyEnrichment();
           })
-          .catch((e) => console.warn('[FACEIT+] Premier indisponible :', e));
+          .catch((e) => console.warn('[FACEIT+] Premier unavailable:', e));
 
-        // Veto en cours : le pool évolue → on le rafraîchit tant que c'est live.
+        // Veto in progress: the pool changes, so we refresh it while it's live.
         if (isMatchLive(match)) {
           pollHandle = ctx.setInterval(() => {
             void pollPool(matchId);
           }, POLL_MS) as unknown as number;
         }
       } catch (error) {
-        console.warn('[FACEIT+] enrichissement indisponible :', error);
+        console.warn('[FACEIT+] enrichment unavailable:', error);
       }
     };
 
@@ -484,7 +534,7 @@ export default defineContentScript({
         if ([...activeIds].sort().join(',') !== before) rerenderStrips();
         if (!isMatchLive(match)) stopPolling();
       } catch {
-        /* transitoire : on réessaiera au prochain tick */
+        /* transient: we'll retry on the next tick */
       }
     };
 
@@ -514,6 +564,10 @@ export default defineContentScript({
 
     const observer = new MutationObserver(scheduleApply);
     observer.observe(document.body, { childList: true, subtree: true });
+    // Scrolling doesn't mutate the DOM: without this, cards entering the
+    // viewport would never request their Premier rating. Uses capture phase
+    // because FACEIT scrolls internal containers, not the window.
+    ctx.addEventListener(document, 'scroll', scheduleApply, { capture: true, passive: true });
     ctx.onInvalidated(() => {
       observer.disconnect();
       stopPolling();
@@ -523,7 +577,7 @@ export default defineContentScript({
     ctx.addEventListener(window, 'wxt:locationchange', ({ newUrl }) => onLocationChange(newUrl));
     onLocationChange(location.href);
 
-    /** Ancienneté du compte formatée (« 24 j », « 5 mois », « 3 ans »). */
+    /** Formats account age for display (days, months, or years). */
     function formatAge(days: number | null): string {
       if (days == null) return t('smurf.unknownAge');
       if (days < 60) return t('smurf.days', { n: days });
@@ -531,7 +585,7 @@ export default defineContentScript({
       return t('smurf.years', { n: Math.round(days / 365) });
     }
 
-    /** Signalement factuel d'un compte atypique (les chiffres sont dans l'infobulle). */
+    /** Factual flag for an atypical account (the numbers are in the tooltip). */
     function createSmurfBadge(smurf: SmurfResult): HTMLElement {
       const badge = document.createElement('span');
       badge.className = SMURF_CLASS;
@@ -564,7 +618,7 @@ export default defineContentScript({
       return badge;
     }
 
-    /** Rôle estimé : icône + nom en dégradé, détail des scores en infobulle. */
+    /** Estimated role: icon + gradient name, score breakdown in the tooltip. */
     function createRolePill(result: RoleResult): HTMLElement {
       const pill = document.createElement('span');
       pill.style.cssText = ['display:inline-flex', 'align-items:center', 'gap:4px'].join(';');
@@ -591,14 +645,14 @@ export default defineContentScript({
       return pill;
     }
 
-    /** Bandeau sous la card : rôle estimé puis K/D par map (pool du match). */
+    /** Strip below the card: estimated role, then K/D per map (match's pool). */
     function createPlayerStrip(stats: MapStat[] | null, role: RoleResult | null): HTMLDivElement {
       const byMapId = new Map((stats ?? []).map((s) => [s.map, s]));
 
-      // Extension de la card du joueur : dessine son propre fond sombre (même
-      // couleur que la card FACEIT) avec coins arrondis en bas — rendu identique
-      // que la card fixe la hauteur ou non. Indentée pour passer à droite des
-      // avatars qui débordent sous la card.
+      // Extension of the player card: draws its own dark background (same
+      // color as the FACEIT card) with rounded bottom corners — looks the same
+      // whether the card has a fixed height or not. Indented to clear the
+      // avatars that overflow below the card.
       const card = document.createElement('div');
       card.className = STATS_CLASS;
       card.style.cssText = [
@@ -659,7 +713,7 @@ export default defineContentScript({
         card.appendChild(chip);
       }
 
-      // Bouton déplier / replier (seulement s'il y a des maps bannies à révéler)
+      // Expand/collapse button (only if there are banned maps to reveal)
       if (hiddenCount > 0 || expanded) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
@@ -691,13 +745,14 @@ export default defineContentScript({
   },
 });
 
-/** Pose le badge Premier juste avant l'icône de niveau FACEIT (slot de droite). Idempotent. */
+/** Places the Premier badge right before the FACEIT level icon (right-hand slot). Idempotent. */
 function placePremierBadge(card: HTMLElement, rating: number | null | undefined): void {
   if (rating == null || !Number.isFinite(rating) || rating <= 0) return;
   const endSlot = card.querySelector<HTMLElement>('[class*="EndSlotContainer"]');
   if (!endSlot || endSlot.querySelector('.faceitplus-premier-badge')) return;
   const badge = createPremierBadge(rating);
-  const level = endSlot.querySelector(':scope > svg'); // icône de niveau FACEIT
+  badge.style.marginRight = '10px';
+  const level = endSlot.querySelector(':scope > svg'); // FACEIT level icon
   if (level) level.insertAdjacentElement('beforebegin', badge);
   else endSlot.insertBefore(badge, endSlot.firstChild);
 }
@@ -718,7 +773,7 @@ function mapAbbrev(name: string): string {
 }
 
 function kdColor(kd: number): string {
-  if (kd >= 1.2) return '#3ba55d'; // vert
-  if (kd < 1.0) return '#e0564f'; // rouge
-  return '#e6c34a'; // jaune (neutre)
+  if (kd >= 1.2) return '#3ba55d'; // green
+  if (kd < 1.0) return '#e0564f'; // red
+  return '#e6c34a'; // yellow (neutral)
 }

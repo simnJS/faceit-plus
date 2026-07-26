@@ -1,5 +1,5 @@
-// API interne de FACEIT, utilisée par leur propre frontend, accessible sans authentification.
-// Les fetch partent du content script : même origine que www.faceit.com, donc pas de CORS.
+// FACEIT's internal API, used by their own frontend, accessible without authentication.
+// Fetches run from the content script: same origin as www.faceit.com, so no CORS.
 
 export interface RosterPlayer {
   id: string;
@@ -17,7 +17,7 @@ interface MapEntity {
 
 interface Faction {
   roster?: RosterPlayer[];
-  /** id du capitaine (celui qui vote au veto) */
+  /** id of the captain (the one who votes in the veto) */
   leader?: string;
 }
 
@@ -34,21 +34,21 @@ interface MatchPayload {
   };
 }
 
-/** true tant que le match n'est pas terminé (veto potentiellement en cours). */
+/** true as long as the match isn't finished (veto potentially still in progress). */
 export function isMatchLive(match: MatchPayload): boolean {
   const s = (match.status ?? match.state ?? '').toUpperCase();
   return s !== '' && s !== 'FINISHED' && s !== 'CANCELLED' && s !== 'ABORTED';
 }
 
 export interface PoolMap {
-  id: string; // ex. "de_dust2"
-  name: string; // ex. "Dust2"
+  id: string; // e.g. "de_dust2"
+  name: string; // e.g. "Dust2"
 }
 
-// Pool actif CS2 courant de FACEIT (matchmaking), dans l'ordre du veto. Sert de
-// base pour la vue « tout voir » quand la room est déjà passé le veto (entities
-// réduites). Si FACEIT change le pool, les maps réellement votées (entities/pick)
-// sont de toute façon fusionnées par-dessus. À mettre à jour si le pool évolue.
+// Current active CS2 pool from FACEIT (matchmaking), in veto order. Used as a
+// fallback for the "show all" view when the room has already gone past the veto
+// (entities reduced). If FACEIT changes the pool, the maps actually voted on
+// (entities/pick) get merged on top anyway. Update this if the pool changes.
 export const CS2_MAP_POOL: PoolMap[] = [
   { id: 'de_dust2', name: 'Dust2' },
   { id: 'de_mirage', name: 'Mirage' },
@@ -59,7 +59,7 @@ export const CS2_MAP_POOL: PoolMap[] = [
   { id: 'de_cache', name: 'Cache' },
 ];
 
-/** Maps encore votables du match (issu du veto = restantes après bans), dans l'ordre. */
+/** Maps still votable in the match (from the veto = remaining after bans), in order. */
 export function getMapPool(match: MatchPayload): PoolMap[] {
   const entities = match.voting?.map?.entities ?? [];
   return entities
@@ -70,7 +70,7 @@ export function getMapPool(match: MatchPayload): PoolMap[] {
     .filter((m) => m.id);
 }
 
-/** Id(s) de la/les map(s) finalement sélectionnée(s) (pick), ou [] si veto pas conclu. */
+/** Id(s) of the finally selected map(s) (pick), or [] if the veto hasn't concluded. */
 export function getPickedMapIds(match: MatchPayload): string[] {
   const pick = match.voting?.map?.pick;
   return Array.isArray(pick) ? pick.filter((id): id is string => typeof id === 'string') : [];
@@ -81,7 +81,7 @@ export function prettyMapName(id: string): string {
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
 
-/** Extrait l'id de match d'une URL de room (`/{lang}/{jeu}/room/{matchId}[/...]`). */
+/** Extracts the match id from a room URL (`/{lang}/{game}/room/{matchId}[/...]`). */
 export function getRoomMatchId(url: string | URL): string | null {
   const match = String(url).match(/\/room\/([^/?#]+)/);
   return match ? match[1] : null;
@@ -101,7 +101,7 @@ export function getMatchRoster(match: MatchPayload): RosterPlayer[] {
   ];
 }
 
-/** Rosters séparés par équipe (pour les stats d'équipe pendant le veto). */
+/** Rosters split by team (for team stats during the veto). */
 export function getFactionRosters(match: MatchPayload): {
   faction1: RosterPlayer[];
   faction2: RosterPlayer[];
@@ -112,29 +112,29 @@ export function getFactionRosters(match: MatchPayload): {
   };
 }
 
-// --- Stats par map ---
-// Le vrai rating HLTV de FACEIT (champ faceit_rating) n'existe que dans l'endpoint
-// `statistics/v1/.../match-rounds`, bloqué par Cloudflare pour les requêtes d'extension
-// (Repeek/Mappio le récupèrent via leur propre backend). On agrège donc le K/D par map
-// depuis l'historique ouvert `stats/v1/stats/time`, accessible avec les seuls cookies.
+// FACEIT's real HLTV rating (the faceit_rating field) only exists on the
+// `statistics/v1/.../match-rounds` endpoint, which is blocked by Cloudflare for
+// extension requests (Repeek/Mappio fetch it through their own backend). So we
+// aggregate K/D per map from the open `stats/v1/stats/time` history instead,
+// which is accessible with cookies alone.
 
 interface RawHistoryMatch {
   i1?: string; // map (de_dust2, …)
   i6?: string; // kills
   i8?: string; // deaths
-  i10?: string; // "1" si victoire
-  c2?: string; // K/D du match
+  i10?: string; // "1" if win
+  c2?: string; // match K/D
 }
 
 export interface MapStat {
-  map: string; // nom brut, ex. "de_mirage"
+  map: string; // raw name, e.g. "de_mirage"
   games: number;
   wins: number;
-  kd: number; // total kills / total deaths sur la période
+  kd: number; // total kills / total deaths over the period
 }
 
 export async function fetchPlayerHistory(uid: string, size = 100): Promise<RawHistoryMatch[]> {
-  // game_mode=5v5 : même échantillon que Mappio (exclut wingman & co)
+  // game_mode=5v5: same sample as Mappio (excludes wingman & co)
   const url = `https://www.faceit.com/api/stats/v1/stats/time/users/${uid}/games/cs2?page=0&size=${size}&game_mode=5v5`;
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`history: HTTP ${res.status}`);
@@ -142,18 +142,17 @@ export async function fetchPlayerHistory(uid: string, size = 100): Promise<RawHi
   return Array.isArray(json) ? json : [];
 }
 
-// --- Stats lifetime (rôles) ---
-// Les champs sont codés (k*/m*). Décodage vérifié le 2026-07-24 en croisant avec
-// l'UI FACEIT : m1=matchs, m2=victoires, m19=dégâts, m20=rounds, m21=kills,
-// k5=K/D moyen par match, k6=winrate %, k8=HS %, k9=K/R, k17=ADR
-// (contrôle : m19/m20 == k17 à la décimale près).
+// Fields are coded (k*/m*). Decoding verified on 2026-07-24 by cross-checking
+// with the FACEIT UI: m1=matches, m2=wins, m19=damage, m20=rounds, m21=kills,
+// k5=avg K/D per match, k6=winrate %, k8=HS %, k9=K/R, k17=ADR
+// (sanity check: m19/m20 == k17 to the decimal).
 
 export type RawStatRecord = Record<string, unknown>;
 
 export interface LifetimeStats {
-  /** Objet lifetime brut (champs codés). */
+  /** Raw lifetime object (coded fields). */
   lifetime: RawStatRecord;
-  /** Segments par map : codename → champs bruts. */
+  /** Segments per map: codename → raw fields. */
   mapSegments: Record<string, RawStatRecord>;
 }
 
@@ -177,7 +176,7 @@ export async function fetchLifetimeStats(uid: string): Promise<LifetimeStats | n
   }
 }
 
-/** Lit un champ codé en nombre (les valeurs sont des chaînes côté API). */
+/** Reads a coded field as a number (values are strings on the API side). */
 export function statNumber(record: RawStatRecord | undefined, key: string): number | null {
   const raw = record?.[key];
   if (raw == null) return null;
@@ -185,9 +184,7 @@ export function statNumber(record: RawStatRecord | undefined, key: string): numb
   return Number.isFinite(n) ? n : null;
 }
 
-// --- Veto / capitaines ---
-
-/** Id du joueur connecté (session FACEIT), ou null. */
+/** Id of the logged-in player (FACEIT session), or null. */
 export async function fetchSelfId(): Promise<string | null> {
   try {
     const res = await fetch('https://www.faceit.com/api/users/v1/sessions/me');
@@ -200,7 +197,7 @@ export async function fetchSelfId(): Promise<string | null> {
   }
 }
 
-/** Capitaine de l'équipe ADVERSE du joueur donné, ou null (spectateur, données absentes). */
+/** Captain of the OPPOSING team relative to the given player, or null (spectator, missing data). */
 export function getOpposingLeader(match: MatchPayload, playerId: string): string | null {
   const inFaction1 = match.teams?.faction1?.roster?.some((p) => p.id === playerId) ?? false;
   const inFaction2 = match.teams?.faction2?.roster?.some((p) => p.id === playerId) ?? false;
@@ -217,11 +214,11 @@ export interface CaptainHistoryMatch {
   teams?: { faction1?: { leader?: string }; faction2?: { leader?: string } };
 }
 
-/** Format de date attendu par match-history v5 : YYYY-MM-DDTHH:MM:SS±HHMM (offset local). */
+/** Date format expected by match-history v5: YYYY-MM-DDTHH:MM:SS±HHMM (local offset). */
 function formatHistoryDate(date: Date, yearsAgo = 0): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   const offsetHours = Math.floor(date.getTimezoneOffset() / 60);
-  const sign = offsetHours < 0 ? '%2B' : '-'; // "+" encodé
+  const sign = offsetHours < 0 ? '%2B' : '-'; // "+" is URL-encoded
   const offset = Math.abs(offsetHours).toString().padStart(2, '0').padEnd(4, '0');
   return (
     `${date.getFullYear() - yearsAgo}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
@@ -229,7 +226,7 @@ function formatHistoryDate(date: Date, yearsAgo = 0): string {
   );
 }
 
-/** ~100 derniers matchs (fenêtre 2 ans) d'un joueur, via match-history v5. */
+/** ~last 100 matches (2-year window) of a player, via match-history v5. */
 export async function fetchCaptainMatchHistory(uid: string): Promise<CaptainHistoryMatch[]> {
   const endOfDay = new Date();
   endOfDay.setHours(23, 59, 59, 999);
@@ -246,14 +243,14 @@ export async function fetchCaptainMatchHistory(uid: string): Promise<CaptainHist
 }
 
 export interface VetoEntity {
-  guid: string; // codename de la map (de_dust2…)
+  guid: string; // map codename (de_dust2…)
   selected_by?: string; // "faction1" | "faction2"
   status?: string; // "drop" | "pick" | …
   random?: boolean;
   round?: number;
 }
 
-/** Historique du veto d'un match passé (tickets democracy), ou null. */
+/** Veto history of a past match (democracy tickets), or null. */
 export async function fetchVetoHistory(matchId: string): Promise<VetoEntity[] | null> {
   try {
     const res = await fetch(
@@ -271,7 +268,7 @@ export async function fetchVetoHistory(matchId: string): Promise<VetoEntity[] | 
   }
 }
 
-/** K/D (total kills / total deaths) et wins par map, sur l'historique fourni. */
+/** K/D (total kills / total deaths) and wins per map, over the given history. */
 export function aggregateMapStats(matches: RawHistoryMatch[]): MapStat[] {
   const acc = new Map<string, { kills: number; deaths: number; games: number; wins: number }>();
   for (const m of matches) {
@@ -294,7 +291,7 @@ export function aggregateMapStats(matches: RawHistoryMatch[]): MapStat[] {
     .sort((a, b) => b.games - a.games);
 }
 
-/** Résumé de la forme récente, toutes maps confondues. */
+/** Summary of recent form, across all maps. */
 export interface RecentForm {
   games: number;
   kd: number; // total kills / total deaths
@@ -318,7 +315,7 @@ export function summarizeRecent(matches: RawHistoryMatch[]): RecentForm {
   };
 }
 
-/** Récupère l'historique une fois et en tire le K/D par map + la forme récente. */
+/** Fetches the history once and derives K/D per map + recent form from it. */
 export async function fetchMapStats(
   uid: string,
   size = 100,
@@ -328,13 +325,13 @@ export async function fetchMapStats(
 }
 
 export interface UserProfile {
-  /** Code pays ISO 3166-1 alpha-2 en minuscules (ex. "fr"). */
+  /** ISO 3166-1 alpha-2 country code, lowercase (e.g. "fr"). */
   country: string | null;
-  /** Date de création du compte (ms epoch), pour l'âge du compte. */
+  /** Account creation date (ms epoch), for account age. */
   createdAt: number | null;
 }
 
-/** Profil public d'un joueur (un seul appel, mutualisé entre drapeaux et smurf). */
+/** Public profile of a player (single call, shared between flags and smurf detection). */
 export async function fetchUserProfile(nickname: string): Promise<UserProfile> {
   try {
     const res = await fetch(

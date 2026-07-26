@@ -1,14 +1,14 @@
-// Modèle de prédiction du prochain ban.
+// Model predicting the next ban.
 //
-// Formulation : logit conditionnel (McFadden). Plutôt que de classer parmi un
-// ensemble fixe de maps, on attribue un score à chaque map ENCORE DISPONIBLE et
-// on normalise sur ces seules candidates. Deux avantages décisifs ici :
-//   • les pools varient (3 maps sur certaines files, 7 sur d'autres) ;
-//   • le modèle apprend « pourquoi » une map est bannie, pas « laquelle » en moyenne.
+// Formulation: conditional logit (McFadden). Rather than classifying among a
+// fixed set of maps, we assign a score to each map STILL AVAILABLE and
+// normalize over those candidates only. Two decisive advantages here:
+//   - pools vary (3 maps in some queues, 7 in others);
+//   - the model learns "why" a map is banned, not "which one" on average.
 //
-// Aucune dépendance : descente de gradient stochastique écrite à la main.
+// No dependencies: hand-written stochastic gradient descent.
 
-/** Maps rencontrées dans le jeu de données, ordre figé à l'entraînement. */
+/** Maps encountered in the dataset, order fixed at training time. */
 export function collectMaps(rows) {
   const set = new Set();
   for (const row of rows) for (const map of row.remaining ?? []) set.add(map);
@@ -16,12 +16,12 @@ export function collectMaps(rows) {
 }
 
 /**
- * Statistiques auxiliaires calculées SUR L'ENTRAÎNEMENT UNIQUEMENT : fréquence
- * de ban globale et habitudes propres à chaque capitaine. Les calculer sur
- * l'ensemble des données ferait fuiter la validation.
+ * Auxiliary statistics computed FROM TRAINING DATA ONLY: global ban frequency
+ * and each captain's own habits. Computing them over the full dataset would
+ * leak information into validation.
  */
 export function buildStats(rows, maps) {
-  const globalBan = Object.fromEntries(maps.map((m) => [m, 1])); // lissage additif
+  const globalBan = Object.fromEntries(maps.map((m) => [m, 1])); // additive smoothing
   const globalOpp = Object.fromEntries(maps.map((m) => [m, maps.length]));
   const captain = new Map();
 
@@ -43,14 +43,14 @@ export function buildStats(rows, maps) {
   return { globalRate, captain, maps };
 }
 
-/** Taux de ban d'un capitaine sur une map, ramené vers la moyenne si peu de données. */
+/** A captain's ban rate on a map, shrunk toward the mean when data is sparse. */
 function captainRate(stats, leader, map) {
   const prior = stats.globalRate[map] ?? 0.15;
   const entry = leader ? stats.captain.get(leader) : null;
   if (!entry) return prior;
   const opportunities = entry.opp[map] ?? 0;
   const bans = entry.ban[map] ?? 0;
-  const K = 8; // poids du prior : ~8 occasions avant de faire confiance au capitaine
+  const K = 8; // prior weight: ~8 opportunities before trusting the captain's own rate
   return (bans + K * prior) / (opportunities + K);
 }
 
@@ -71,7 +71,7 @@ export const FEATURE_NAMES = (maps) => [
   'step',
 ];
 
-/** Vecteur de variables pour le couple (décision, map candidate). */
+/** Feature vector for the (decision, candidate map) pair. */
 export function features(row, map, stats) {
   const maps = stats.maps;
   const x = new Float64Array(maps.length + 8);
@@ -85,7 +85,7 @@ export function features(row, map, stats) {
 
   x[base + 0] = wrBanner == null ? 0 : wrBanner - 0.5;
   x[base + 1] = wrOpp == null ? 0 : wrOpp - 0.5;
-  // Signal central : on bannit là où l'adversaire est fort et où l'on est faible.
+  // Core signal: teams ban where the opponent is strong and they themselves are weak.
   x[base + 2] = wrBanner == null || wrOpp == null ? 0 : wrOpp - wrBanner;
   x[base + 3] = Math.min(1, Math.log1p(games) / 4);
   x[base + 4] = wrBanner == null ? 0 : 1;
@@ -101,7 +101,7 @@ const dot = (w, x) => {
   return s;
 };
 
-/** Distribution de probabilité sur les maps candidates. */
+/** Probability distribution over the candidate maps. */
 export function predict(model, row, remaining = row.remaining) {
   const scores = remaining.map((map) => dot(model.weights, features(row, map, model.stats)));
   const max = Math.max(...scores);
@@ -111,8 +111,8 @@ export function predict(model, row, remaining = row.remaining) {
 }
 
 /**
- * Entraînement par descente de gradient stochastique sur l'entropie croisée.
- * `onEpoch` permet de suivre l'évolution époque par époque.
+ * Training via stochastic gradient descent on cross-entropy loss.
+ * `onEpoch` allows tracking progress epoch by epoch.
  */
 export function train(rows, { epochs = 30, lr = 0.3, l2 = 1e-4, seed = 1, onEpoch } = {}) {
   const maps = collectMaps(rows);
@@ -120,7 +120,7 @@ export function train(rows, { epochs = 30, lr = 0.3, l2 = 1e-4, seed = 1, onEpoc
   const dim = maps.length + 8;
   const model = { weights: new Float64Array(dim), stats, maps };
 
-  // Générateur pseudo-aléatoire déterministe : mêmes conditions à chaque essai.
+  // Deterministic pseudo-random generator: same conditions on every run.
   let state = seed;
   const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 
@@ -149,7 +149,7 @@ export function train(rows, { epochs = 30, lr = 0.3, l2 = 1e-4, seed = 1, onEpoc
       if (target < 0) continue;
       loss -= Math.log(Math.max(1e-12, probs[target]));
 
-      // Gradient : (probabilité - réalité) pour chaque candidate.
+      // Gradient: (probability - actual) for each candidate.
       for (let c = 0; c < candidates.length; c++) {
         const g = probs[c] - (c === target ? 1 : 0);
         const x = xs[c];
@@ -162,15 +162,15 @@ export function train(rows, { epochs = 30, lr = 0.3, l2 = 1e-4, seed = 1, onEpoc
   return model;
 }
 
-/** Sérialisation compacte, destinée à être embarquée dans l'extension. */
+/** Compact serialization, meant to be bundled into the extension. */
 export function serialize(model) {
   return JSON.stringify({
     version: 1,
     maps: model.maps,
     weights: [...model.weights].map((w) => Number(w.toFixed(6))),
     globalRate: model.stats.globalRate,
-    // Les habitudes par capitaine restent hors du fichier : trop volumineuses et
-    // recalculables côté extension depuis l'historique du capitaine adverse.
+    // Per-captain habits are left out of the file: too large, and
+    // recomputable client-side from the opposing captain's history.
   });
 }
 

@@ -1,11 +1,11 @@
-// Conseil de veto et prédiction de la map finale.
+// Veto advice and final map prediction.
 //
-// Les autres extensions affichent des chiffres bruts ; ici on en tire une décision :
-//   • quelle map bannir en priorité (le plus gros avantage adverse, en évitant de
-//     « gaspiller » un ban sur une map que le capitaine d'en face bannira lui-même) ;
-//   • quelle map a le plus de chances d'être jouée, par simulation de Monte-Carlo
-//     du veto restant (notre camp joue rationnellement, le camp adverse suit sa
-//     distribution de bans historique).
+// Other extensions display raw numbers; this module turns them into a decision:
+//   - which map to ban first (biggest opponent advantage, while avoiding "wasting"
+//     a ban on a map the enemy captain would ban themselves anyway);
+//   - which map is most likely to be played, via Monte Carlo simulation of the
+//     remaining veto (our side plays rationally, the opponent follows their
+//     historical ban distribution).
 
 import type { PoolMap } from './faceit-api';
 import type { TeamMapStat } from './team-map-stats';
@@ -19,31 +19,31 @@ import {
   type VetoState,
 } from './veto-model';
 
-/** Poids entraînés hors ligne. `version: 0` signifie « pas encore entraîné ». */
+/** Offline-trained weights. `version: 0` means "not yet trained". */
 const MODEL = weights as VetoModel;
 export const hasTrainedModel = MODEL.version > 0 && MODEL.maps.length > 0;
 
 export interface VetoContext {
-  /** Maps encore en jeu, dans l'ordre du pool. */
+  /** Maps still in play, in pool order. */
   pool: PoolMap[];
-  /** Winrates de notre équipe et de l'adverse, par id de map. */
+  /** Winrates of our team and the opponent, keyed by map id. */
   mine: Map<string, TeamMapStat>;
   theirs: Map<string, TeamMapStat>;
-  /** Probabilité (%) que le capitaine adverse bannisse chaque map. */
+  /** Probability (%) that the opposing captain bans each map. */
   banRates: Map<string, number> | null;
-  /** Compteurs bruts de veto du capitaine adverse, pour le modèle. */
+  /** Raw veto counts for the opposing captain, used by the model. */
   captainCounts?: Record<string, { drops: number; opportunities: number }> | null;
-  /** true si c'est à notre équipe de bannir maintenant. */
+  /** true if it is our team's turn to ban now. */
   ourTurn?: boolean;
 }
 
-/** Convertit nos statistiques d'équipe au format attendu par le modèle. */
+/** Converts our team stats to the format expected by the model. */
 function toRecords(stats: Map<string, TeamMapStat>, pool: PoolMap[]): Map<string, MapRecord> {
   const records = new Map<string, MapRecord>();
   for (const map of pool) {
     const entry = stats.get(map.id);
     records.set(map.id, {
-      // Le modèle raisonne en fraction, l'extension stocke des pourcentages.
+      // The model works with fractions, the extension stores percentages.
       winrate: entry?.winrate == null ? null : entry.winrate / 100,
       games: entry?.games ?? 0,
     });
@@ -75,8 +75,8 @@ function winrate(stats: Map<string, TeamMapStat>, mapId: string): number {
 }
 
 /**
- * Score de priorité de ban : positif = la map avantage l'adversaire.
- * On atténue les maps qu'ils bannissent souvent eux-mêmes (ban redondant).
+ * Ban priority score: positive means the map favors the opponent.
+ * Maps they often ban themselves are discounted (redundant ban).
  */
 function banPriority(context: VetoContext, mapId: string): number {
   const advantage = winrate(context.theirs, mapId) - winrate(context.mine, mapId);
@@ -86,24 +86,24 @@ function banPriority(context: VetoContext, mapId: string): number {
 
 export interface BanAdvice {
   mapId: string;
-  /** Écart de winrate en notre défaveur sur cette map, en points. */
+  /** Winrate gap against us on this map, in points. */
   advantage: number;
-  /** Gain espéré du ban, en points de winrate, quand le modèle est disponible. */
+  /** Expected gain from the ban, in winrate points, when the model is available. */
   gain?: number;
-  /** true si le conseil vient du modèle entraîné plutôt que de la règle simple. */
+  /** true if the advice comes from the trained model rather than the simple rule. */
   fromModel: boolean;
 }
 
 /**
- * Map à bannir en priorité.
+ * Map to ban first.
  *
- * Avec le modèle entraîné : pour chaque candidate, on déroule tout le reste du
- * veto et on pondère chaque issue par l'avantage qu'elle nous donne. On retient
- * le ban dont l'espérance est la meilleure — ce qui évite notamment de gaspiller
- * un ban sur une map que l'adversaire allait retirer lui-même.
+ * With the trained model: for each candidate, we play out the rest of the veto
+ * and weight each outcome by the advantage it gives us. We keep the ban with
+ * the best expectation — which in particular avoids wasting a ban on a map the
+ * opponent was going to remove themselves.
  *
- * Sans modèle, on retombe sur la règle en un coup : bannir là où l'écart de
- * winrate nous est le plus défavorable.
+ * Without a model, we fall back to a one-shot rule: ban wherever the winrate
+ * gap is most unfavorable to us.
  */
 export function recommendBan(context: VetoContext): BanAdvice | null {
   if (context.pool.length <= 1) return null;
@@ -111,9 +111,9 @@ export function recommendBan(context: VetoContext): BanAdvice | null {
   if (hasTrainedModel) {
     const ranked = recommendBans(MODEL, toModelState(context));
     const best = ranked[0];
-    // On conseille toujours : « quelle map bannir » a une réponse même quand la
-    // marge est mince. Exiger un écart minimum revenait à se taire dans les
-    // situations les plus fréquentes, celles où le pool est équilibré.
+    // We always give advice: "which map to ban" has an answer even when the
+    // margin is thin. Requiring a minimum gap would mean staying silent in the
+    // most common situations, where the pool is balanced.
     if (best) {
       return {
         mapId: best.map,
@@ -131,13 +131,13 @@ export function recommendBan(context: VetoContext): BanAdvice | null {
     const advantage = winrate(context.theirs, map.id) - winrate(context.mine, map.id);
     if (!best || score > best.score) best = { mapId: map.id, advantage, score };
   }
-  // Sans avantage adverse mesurable, mieux vaut ne rien conseiller.
+  // With no measurable opponent advantage, it's better to give no advice.
   return best && best.advantage > 2
     ? { mapId: best.mapId, advantage: best.advantage, fromModel: false }
     : null;
 }
 
-/** Tire une map au sort selon les probabilités de ban du capitaine adverse. */
+/** Draws a map at random according to the opposing captain's ban probabilities. */
 function sampleTheirBan(remaining: string[], banRates: Map<string, number> | null): string {
   if (!banRates || banRates.size === 0) {
     return remaining[Math.floor(Math.random() * remaining.length)];
@@ -153,15 +153,15 @@ function sampleTheirBan(remaining: string[], banRates: Map<string, number> | nul
 }
 
 /**
- * Probabilité (%) que chaque map soit celle finalement jouée.
- * @param weStartTheVeto true si c'est à notre camp de bannir en premier
+ * Probability (%) that each map ends up being the one played.
+ * @param weStartTheVeto true if our side bans first
  */
 export function predictFinalMap(
   context: VetoContext,
   weStartTheVeto = true,
   iterations = 1500,
 ): Map<string, number> {
-  // Avec le modèle, la distribution est calculée exactement plutôt qu'échantillonnée.
+  // With the model, the distribution is computed exactly rather than sampled.
   if (hasTrainedModel) {
     return modelFinalMap(MODEL, { ...toModelState(context), ourTurn: weStartTheVeto });
   }
@@ -171,7 +171,7 @@ export function predictFinalMap(
   if (ids.length === 0) return counts;
   if (ids.length === 1) return new Map([[ids[0], 100]]);
 
-  // Notre camp bannit rationnellement : ordre de priorité figé, calculé une fois.
+  // Our side bans rationally: fixed priority order, computed once.
   const priority = new Map(ids.map((id) => [id, banPriority(context, id)]));
 
   for (let run = 0; run < iterations; run++) {

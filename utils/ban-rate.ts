@@ -1,13 +1,13 @@
-// Probabilité de ban par map, basée sur l'historique de veto du capitaine adverse.
-// Réplique la formule de Mappio (reverse engineering v4.4.6) :
-//   1. Matchs du capitaine (match-history v5, 100 max / 2 ans), filtrés :
-//      il était leader + matchmaking FACEIT + terminé.
-//   2. Pour chaque match, historique du veto (democracy) : on compte par map les
-//      « drops » actifs du capitaine (selected_by = sa faction, non random,
-//      status = "drop") et les opportunités (pondérées par la profondeur du veto,
-//      comme Mappio — reproduit tel quel pour des chiffres identiques).
-//   3. Lissage bayésien : proba brute = (drops + 2) / (opportunités + 4)
-//      (moyenne d'une Beta(drops+2, autres+2)), puis normalisation à 100 % sur le pool.
+// Ban probability per map, based on the opposing captain's veto history.
+// Replicates Mappio's formula (reverse-engineered from v4.4.6):
+//   1. Captain's matches (match-history v5, 100 max / 2 years), filtered to:
+//      they were leader + FACEIT matchmaking + finished.
+//   2. For each match, veto history (democracy): count per map the captain's
+//      active "drops" (selected_by = their faction, not random,
+//      status = "drop") and opportunities (weighted by veto depth,
+//      same as Mappio — reproduced as-is for identical numbers).
+//   3. Bayesian smoothing: raw probability = (drops + 2) / (opportunities + 4)
+//      (mean of a Beta(drops+2, others+2)), then normalized to 100% over the pool.
 
 import {
   fetchCaptainMatchHistory,
@@ -16,14 +16,14 @@ import {
 } from './faceit-api';
 
 export interface BanRates {
-  /** Nombre de matchs de capitaine analysés (taille de l'échantillon). */
+  /** Number of captain matches analyzed (sample size). */
   datasetSize: number;
-  /** map codename → probabilité de ban en % (absente si jamais vue au veto). */
+  /** map codename → ban probability in % (absent if never seen in a veto). */
   probByMap: Record<string, number>;
   /**
-   * Compteurs bruts par map : bans effectifs et occasions. Le modèle applique
-   * son propre lissage dessus, identique à celui de l'entraînement — d'où
-   * l'exposition des comptes plutôt que d'un taux déjà transformé.
+   * Raw per-map counts: actual bans and opportunities. The model applies its
+   * own smoothing on top of these, identical to the one used during training —
+   * hence exposing raw counts rather than an already-transformed rate.
    */
   counts: Record<string, { drops: number; opportunities: number }>;
 }
@@ -33,10 +33,10 @@ interface CacheEntry {
   t: number;
 }
 
-// v2 : ajout des compteurs bruts, nécessaires au modèle
+// v2: added raw counts, needed by the model
 const CACHE_KEY = 'faceitplus:banRateCache:v2';
 const TTL_MS = 6 * 60 * 60 * 1000;
-const VETO_FETCH_CHUNK = 5; // requêtes democracy en parallèle max
+const VETO_FETCH_CHUNK = 5; // max parallel democracy requests
 
 export async function resolveCaptainBanRates(
   captainId: string,
@@ -60,7 +60,7 @@ export async function resolveCaptainBanRates(
   );
   if (captainMatches.length === 0) return null;
 
-  // Récupération des vetos par paquets (ménage l'API : jusqu'à ~100 requêtes)
+  // Fetch vetos in chunks (goes easy on the API: up to ~100 requests)
   const vetos: Array<{ faction: string; entities: VetoEntity[] }> = [];
   for (let i = 0; i < captainMatches.length; i += VETO_FETCH_CHUNK) {
     const chunk = captainMatches.slice(i, i + VETO_FETCH_CHUNK);
@@ -77,7 +77,7 @@ export async function resolveCaptainBanRates(
     }
   }
 
-  // Accumulation drops / opportunités (formule Mappio, pondération incluse)
+  // Accumulate drops / opportunities (Mappio formula, weighting included)
   const acc = new Map<string, { drop: number; opportunities: number }>();
   for (const { faction, entities } of vetos) {
     let o = 0;
@@ -95,7 +95,7 @@ export async function resolveCaptainBanRates(
     }
   }
 
-  // Beta(drop+2, autres+2).mean puis normalisation à 100 % sur les maps vues
+  // Beta(drop+2, others+2).mean then normalized to 100% over maps seen
   const seen = poolIds.filter((id) => acc.has(id));
   const raw = new Map<string, number>();
   for (const id of seen) {

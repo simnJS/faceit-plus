@@ -1,19 +1,19 @@
-// Mesure de la qualité du modèle, partagée par l'entraînement et le banc d'essai.
+// Model quality measurement, shared by training and the benchmark.
 //
-// Deux questions distinctes :
-//   1. « quel sera le prochain ban ? » — précision coup par coup ;
-//   2. « quelle map sera jouée au final ? » — obtenue en déroulant le veto
-//      complet par simulation, c'est ce qui intéresse l'utilisateur.
+// Two distinct questions:
+//   1. "what will the next ban be?" — move-by-move accuracy;
+//   2. "which map will end up being played?" — obtained by simulating the
+//      full veto, which is what the user actually cares about.
 
 import { predict } from './model.mjs';
 
 /**
- * Ne garde que les décisions dont le capitaine est réellement connu.
+ * Keeps only the decisions where the captain is genuinely known.
  *
- * En production l'extension récupère en direct l'historique complet du capitaine
- * adverse : elle dispose donc toujours de cette profondeur. Évaluer sur des
- * capitaines vus deux fois mesurerait une situation qui ne se produit jamais, et
- * entraînerait le modèle à ignorer sa variable la plus informative.
+ * In production the extension fetches the opposing captain's full history
+ * live, so it always has this depth of data. Evaluating on captains seen only
+ * twice would measure a situation that never actually occurs, and would train
+ * the model to ignore its most informative variable.
  */
 export function filterByCaptainHistory(rows, referenceRows, minDecisions) {
   if (!minDecisions || minDecisions < 1) return rows;
@@ -24,7 +24,7 @@ export function filterByCaptainHistory(rows, referenceRows, minDecisions) {
   return rows.filter((row) => (seen.get(row.banner_leader) ?? 0) >= minDecisions);
 }
 
-/** Regroupe les décisions par match, dans l'ordre des tours. */
+/** Groups decisions by match, in round order. */
 export function groupByMatch(rows) {
   const byMatch = new Map();
   for (const row of rows) {
@@ -36,13 +36,13 @@ export function groupByMatch(rows) {
 }
 
 /**
- * Découpe temporelle en trois : on entraîne sur le passé, on choisit l'époque
- * sur la validation, et on ne mesure qu'une fois sur le test.
+ * Three-way temporal split: train on the past, pick the epoch on validation,
+ * and measure only once on the test set.
  *
- * Le troisième jeu n'est pas un luxe : la précision sur la map finale oscille de
- * plusieurs points d'une époque à l'autre, si bien que retenir « la meilleure »
- * sur le jeu qui sert aussi à publier le résultat revient à sélectionner un
- * tirage chanceux — et à surestimer la performance réelle.
+ * The third set is not a luxury: final-map accuracy swings by several points
+ * from one epoch to another, so picking "the best" epoch on the same set used
+ * to report the result amounts to cherry-picking a lucky draw — and
+ * overstating real performance.
  */
 export function temporalSplit(rows, ratios = [0.7, 0.15]) {
   const byMatch = groupByMatch(rows);
@@ -67,7 +67,7 @@ export function temporalSplit(rows, ratios = [0.7, 0.15]) {
   };
 }
 
-/** Précision sur le prochain ban : part des décisions où la map est trouvée. */
+/** Accuracy on the next ban: share of decisions where the map is correctly identified. */
 export function nextBanAccuracy(model, rows) {
   let hits = 0;
   let total = 0;
@@ -86,9 +86,9 @@ export function nextBanAccuracy(model, rows) {
 }
 
 /**
- * Déroule le veto complet : à chaque tour on tire une map selon le modèle,
- * jusqu'à n'en laisser qu'une. Répété N fois, ça donne la probabilité que
- * chaque map soit celle finalement jouée.
+ * Plays out the full veto: at each round a map is drawn according to the
+ * model, until only one remains. Repeated N times, this gives the probability
+ * that each map ends up being the one played.
  */
 export function simulateMatch(model, decisions, iterations = 400, rng = Math.random) {
   const pool = decisions[0]?.remaining ?? [];
@@ -99,8 +99,8 @@ export function simulateMatch(model, decisions, iterations = 400, rng = Math.ran
     let remaining = [...pool];
     for (const decision of decisions) {
       if (remaining.length <= 1) break;
-      // On garde le contexte réel du tour (capitaine, vécu des équipes) mais on
-      // applique le modèle à l'ensemble simulé, qui a pu diverger du réel.
+      // We keep the round's real context (captain, teams' track record) but
+      // apply the model to the simulated pool, which may have diverged from reality.
       const distribution = predict(model, decision, remaining);
       let draw = rng();
       let chosen = distribution[distribution.length - 1].map;
@@ -122,13 +122,14 @@ export function simulateMatch(model, decisions, iterations = 400, rng = Math.ran
 }
 
 /**
- * Distribution EXACTE de la map finale, par programmation dynamique sur les
- * sous-ensembles de maps encore en jeu.
+ * EXACT distribution of the final map, via dynamic programming over the
+ * subsets of maps still in play.
  *
- * Le tirage de Monte-Carlo introduisait une variance telle que deux mesures du
- * même modèle pouvaient différer de plusieurs points — et pénalisait
- * mécaniquement les modèles bien calibrés, dont les tirages sont plus dispersés.
- * Le pool ne dépassant jamais 8 maps, il y a au plus 256 états : on énumère.
+ * Monte Carlo sampling introduced enough variance that two measurements of
+ * the same model could differ by several points — and it mechanically
+ * penalized well-calibrated models, whose draws are more spread out. Since
+ * the pool never exceeds 8 maps, there are at most 256 states, so we
+ * enumerate them.
  */
 export function finalMapDistribution(model, decisions) {
   const pool = decisions[0]?.remaining ?? [];
@@ -138,7 +139,7 @@ export function finalMapDistribution(model, decisions) {
 
   const bitOf = new Map(pool.map((map, i) => [map, 1 << i]));
   const full = (1 << n) - 1;
-  const reach = new Float64Array(1 << n); // probabilité d'atteindre chaque état
+  const reach = new Float64Array(1 << n); // probability of reaching each state
   reach[full] = 1;
 
   const popcount = (x) => {
@@ -149,7 +150,7 @@ export function finalMapDistribution(model, decisions) {
     }
     return c;
   };
-  // On traite les états du plus peuplé au plus réduit : chaque ban retire un bit.
+  // We process states from most to least populated: each ban clears one bit.
   const states = [...Array(1 << n).keys()].filter((m) => m > 0).sort((a, b) => popcount(b) - popcount(a));
 
   for (const mask of states) {
@@ -158,7 +159,7 @@ export function finalMapDistribution(model, decisions) {
     const remaining = pool.filter((_, i) => mask & (1 << i));
     if (remaining.length <= 1) continue;
     const step = n - remaining.length;
-    if (step >= decisions.length) continue; // le veto s'arrête là
+    if (step >= decisions.length) continue; // the veto stops here
     const distribution = predict(model, decisions[step], remaining);
     for (const option of distribution) {
       reach[mask & ~bitOf.get(option.map)] += p * option.p;
@@ -170,7 +171,7 @@ export function finalMapDistribution(model, decisions) {
   return result;
 }
 
-/** Précision sur la map finale, sur un ensemble de matchs. */
+/** Accuracy on the final map, over a set of matches. */
 export function finalMapAccuracy(model, matches) {
   let hits = 0;
   let total = 0;
@@ -187,7 +188,7 @@ export function finalMapAccuracy(model, matches) {
   return { accuracy: total ? hits / total : 0, total };
 }
 
-/** Repères de comparaison : sans eux, un score brut ne veut rien dire. */
+/** Comparison baselines: without them, a raw score is meaningless. */
 export function baselines(rows, matches, stats) {
   let randomHits = 0;
   let frequencyHits = 0;
@@ -202,7 +203,7 @@ export function baselines(rows, matches, stats) {
     total += 1;
   }
 
-  // Map finale : au hasard parmi le pool, et « la map la moins bannie ».
+  // Final map: random pick from the pool, and "the least banned map".
   let randomFinal = 0;
   let frequencyFinal = 0;
   let finalTotal = 0;

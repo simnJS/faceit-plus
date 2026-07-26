@@ -5,9 +5,9 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   webExt: {
-    // L'extension est chargée manuellement dans le Chrome quotidien
-    // (chrome://extensions → « Charger l'extension non empaquetée » → .output/chrome-mv3-dev).
-    // Passer disabled à false pour revenir au Chrome de dev à profil dédié.
+    // The extension is loaded manually into everyday Chrome
+    // (chrome://extensions → "Load unpacked" → .output/chrome-mv3-dev).
+    // Set disabled to false to go back to the dedicated dev profile Chrome.
     disabled: true,
     chromiumProfile: resolve('.wxt/chrome-data'),
     firefoxProfile: resolve('.wxt/firefox-data'),
@@ -16,9 +16,9 @@ export default defineConfig({
   },
   manifest: {
     name: 'FACEIT+',
-    description: 'Extension navigateur qui enrichit FACEIT',
+    description: 'Browser extension that enhances FACEIT',
     permissions: ['storage'],
-    // csstats.gg : fetch du rating Premier depuis le service worker (pas de CORS côté csstats).
+    // csstats.gg: fetch the Premier rating from the service worker (no CORS on csstats' side).
     host_permissions: ['*://*.faceit.com/*', 'https://csstats.gg/*'],
     browser_specific_settings: {
       gecko: { id: 'faceit-plus@simnjs.fr' },

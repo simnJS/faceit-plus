@@ -1,11 +1,11 @@
-// Overlays sur les tuiles de la phase de veto : winrate des deux équipes par map.
-// Sélecteurs et comportements calqués sur ceux du site (analyse du DOM FACEIT via
-// le reverse engineering de Mappio) :
-//   - tuiles de veto : [class^='VetoList__Container'] → carte = 1er enfant de chaque item
-//   - nom de la map dans une carte : card.querySelector('div > span')
-//   - map bannie : la couleur calculée du label passe à rgb(93, 93, 93)
-//   - la room peut vivre dans un web component shadow DOM (#parasite-container
-//     [id^='MATCHROOM-OVERVIEW']) → recherche qui traverse les shadow roots ouverts.
+// Overlays on veto-phase tiles: both teams' winrate per map.
+// Selectors and behavior mirror the live site (FACEIT DOM analysis via
+// reverse-engineering of Mappio):
+//   - veto tiles: [class^='VetoList__Container'] → card = 1st child of each item
+//   - map name inside a card: card.querySelector('div > span')
+//   - banned map: the label's computed color switches to rgb(93, 93, 93)
+//   - the room may live inside a shadow DOM web component (#parasite-container
+//     [id^='MATCHROOM-OVERVIEW']) → search traverses open shadow roots.
 
 import type { TeamMapStat } from './team-map-stats';
 import type { Translator } from './i18n';
@@ -19,7 +19,7 @@ export interface VetoCard {
   name: string;
 }
 
-/** "Dust 2" / "de_dust2" / "Dust2" → "dust2" (clé de rapprochement). */
+/** "Dust 2" / "de_dust2" / "Dust2" → "dust2" (matching key). */
 export function normalizeMapName(name: string): string {
   return name
     .toLowerCase()
@@ -27,8 +27,8 @@ export function normalizeMapName(name: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// La recherche profonde (shadow roots) est coûteuse : on ne la tente que si le
-// light DOM ne donne rien, et au plus toutes les 3 s.
+// Deep search (shadow roots) is expensive: only attempted when the light DOM
+// finds nothing, and at most once every 3s.
 let lastDeepSearch = 0;
 
 function findVetoContainers(): HTMLElement[] {
@@ -54,12 +54,12 @@ function findVetoContainers(): HTMLElement[] {
 }
 
 /**
- * Relevé de ce que la page contient réellement autour du veto.
+ * Snapshot of what the page actually contains around the veto.
  *
- * Les sélecteurs utilisés viennent d'une analyse d'une autre extension, pas d'une
- * observation directe : si FACEIT a changé sa structure, rien ne s'accroche et la
- * fonctionnalité est muette. Ce relevé, volontairement large, permet de trancher
- * sur pièces plutôt que de deviner.
+ * The selectors used come from analyzing another extension, not from direct
+ * observation: if FACEIT changed its structure, nothing matches and the
+ * feature goes silent. This deliberately broad survey lets us diagnose from
+ * evidence instead of guessing.
  */
 export function diagnoseVeto(): Record<string, unknown> {
   const survey: Record<string, unknown> = {};
@@ -79,27 +79,26 @@ export function diagnoseVeto(): Record<string, unknown> {
     ),
   ].slice(0, 12);
 
-  survey.conteneursStricts = document.querySelectorAll(
+  survey.strictContainers = document.querySelectorAll(
     "[class^='VetoList__Container']",
   ).length;
-  survey.conteneursLarges = document.querySelectorAll("[class*='VetoList']").length;
-  survey.tuilesPreference = document.querySelectorAll(
+  survey.looseContainers = document.querySelectorAll("[class*='VetoList']").length;
+  survey.preferenceTiles = document.querySelectorAll(
     "div[data-testid='matchPreference']",
   ).length;
-  survey.boutonsActifs = document.querySelectorAll(
+  survey.activeButtons = document.querySelectorAll(
     "div[data-testid='matchPreference'] button:not([disabled])",
   ).length;
-  survey.cartesTrouvees = findVetoCards().length;
-  survey.nomsDetectes = findVetoCards()
+  survey.cardsFound = findVetoCards().length;
+  survey.detectedNames = findVetoCards()
     .map((c) => c.name)
     .slice(0, 10);
 
-  // Y a-t-il un composant isolé (shadow DOM) qui contiendrait le veto ?
+  // Is there an isolated shadow DOM component that might contain the veto?
   survey.shadowRoots = [...document.querySelectorAll('*')].filter((el) => el.shadowRoot).length;
   return survey;
 }
 
-/** Toutes les cartes de map du veto visibles, avec leur label et leur nom. */
 export function findVetoCards(): VetoCard[] {
   const cards: VetoCard[] = [];
   for (const container of findVetoContainers()) {
@@ -114,7 +113,7 @@ export function findVetoCards(): VetoCard[] {
   return cards;
 }
 
-/** true si le label de la carte indique une map bannie (grisée par FACEIT). */
+/** True if the card's label indicates a banned map (grayed out by FACEIT). */
 export function isCardBanned(card: VetoCard): boolean {
   return !!card.label && getComputedStyle(card.label).color === BANNED_LABEL_COLOR;
 }
@@ -131,7 +130,7 @@ function winrateColor(stat: TeamMapStat | undefined): string {
 }
 
 function banRateColor(pct: number): string {
-  if (pct >= 20) return '#FF5151'; // forte proba de ban (seuils Mappio)
+  if (pct >= 20) return '#FF5151'; // high ban probability (Mappio thresholds)
   if (pct >= 10) return '#FBBF24';
   return '#a0a0a0';
 }
@@ -140,17 +139,17 @@ export interface VetoBadgeOptions {
   faction1: TeamMapStat | undefined;
   faction2: TeamMapStat | undefined;
   banRate: number | null | undefined;
-  /** Map conseillée au ban (avec l'écart de winrate qui le justifie). */
+  /** Recommended map to ban (with the winrate delta that justifies it). */
   banAdvice?: { delta: number; fromModel?: boolean } | null;
-  /** Probabilité (%) que cette map soit finalement jouée. */
+  /** Probability (%) that this map ends up being played. */
   likelyPercent?: number | null;
   t: Translator;
 }
 
 /**
- * Badge posé sur une tuile de veto : winrate équipe 1 / équipe 2 (liseré rose /
- * bleu, couleurs des factions FACEIT), probabilité de ban du capitaine adverse,
- * et le cas échéant le conseil de ban ou la map probable.
+ * Badge placed on a veto tile: team 1 / team 2 winrate (pink / blue border,
+ * matching FACEIT's faction colors), the opposing captain's ban probability,
+ * and, if applicable, the ban advice or the likely map.
  */
 export function createVetoBadge(options: VetoBadgeOptions): HTMLElement {
   const { faction1, faction2, banRate, banAdvice, likelyPercent, t } = options;
@@ -163,7 +162,7 @@ export function createVetoBadge(options: VetoBadgeOptions): HTMLElement {
     'justify-content:center',
     'gap:4px',
     'margin-top:4px',
-    'pointer-events:none', // ne bloque jamais le clic de ban
+    'pointer-events:none', // never intercepts the ban click
     'font:700 10px/1 "Play","Segoe UI",Roboto,Arial,sans-serif',
     'font-variant-numeric:tabular-nums',
   ].join(';');
@@ -208,7 +207,6 @@ export function createVetoBadge(options: VetoBadgeOptions): HTMLElement {
     wrap.appendChild(ban);
   }
 
-  // Conseils : bandeau pleine largeur sous les pastilles
   const advice = (text: string, tooltip: string, color: string, background: string) => {
     const chip = document.createElement('span');
     chip.textContent = text;

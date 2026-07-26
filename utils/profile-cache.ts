@@ -1,18 +1,18 @@
 import { fetchUserProfile, type UserProfile } from './faceit-api';
 
 interface CacheEntry {
-  c: string | null; // pays
-  d: number | null; // création du compte
-  t: number; // écriture
+  c: string | null; // country
+  d: number | null; // account creation date
+  t: number; // write timestamp
 }
 
 const CACHE_KEY = 'faceitplus:profileCache';
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Profil public de chaque pseudo (pays + date de création), via storage.local
- * en cache (TTL 7 jours). Un seul appel réseau par joueur, partagé par les
- * drapeaux et la détection de smurf.
+ * Public profile for each nickname (country + creation date), via storage.local
+ * caching (7-day TTL). A single network call per player, shared by the flag
+ * display and smurf detection.
  */
 export async function resolveProfiles(nicknames: string[]): Promise<Map<string, UserProfile>> {
   const stored = ((await browser.storage.local.get(CACHE_KEY))[CACHE_KEY] ?? {}) as Record<

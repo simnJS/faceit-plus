@@ -8,16 +8,16 @@ export interface PlayerHistoryStats {
 interface CacheEntry {
   s: MapStat[];
   r: RecentForm;
-  t: number; // timestamp d'écriture
+  t: number; // write timestamp
 }
 
-// v4 : ajout du résumé de forme récente à côté du K/D par map
+// v4: added the recent-form summary alongside per-map K/D
 const CACHE_KEY = 'faceitplus:mapStatsCache:v4';
-const TTL_MS = 6 * 60 * 60 * 1000; // 6 h — les stats bougent lentement
+const TTL_MS = 6 * 60 * 60 * 1000; // 6h — stats change slowly
 
 /**
- * K/D par map et forme récente de chaque joueur (par uid), via storage.local en
- * cache (TTL 6 h) puis l'historique FACEIT pour les manquants/expirés.
+ * Per-map K/D and recent form for each player (by uid), via storage.local caching
+ * (6h TTL) then the FACEIT match history for missing/expired entries.
  */
 export async function resolveMapStats(uids: string[]): Promise<Map<string, PlayerHistoryStats>> {
   const stored = ((await browser.storage.local.get(CACHE_KEY))[CACHE_KEY] ??

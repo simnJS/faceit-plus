@@ -1,13 +1,13 @@
 import { fetchLifetimeStats, statNumber } from './faceit-api';
 import { scoreRoles, type RoleResult } from './roles';
 
-/** Analyse d'un joueur tirée d'un seul appel de stats lifetime. */
+/** Player analysis derived from a single lifetime stats call. */
 export interface PlayerAnalysis {
   role: RoleResult;
   matches: number;
   winrate: number; // %
-  kd: number; // K/D moyen par match
-  hs: number; // % de headshots
+  kd: number; // average K/D per match
+  hs: number; // headshot %
 }
 
 interface CacheEntry {

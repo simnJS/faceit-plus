@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Vérification et build
+    name: Verify and build
     runs-on: ubuntu-latest
 
     steps:
@@ -19,12 +19,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      # npm install plutôt que npm ci : le fichier de verrouillage est généré sous
-      # Windows et n'y liste pas les dépendances optionnelles propres à Linux.
-      - name: Installer les dépendances
+      # npm install rather than npm ci: the lockfile is generated on Windows
+      # and doesn't list the Linux-specific optional dependencies there.
+      - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Vérifier les types
+      - name: Check types
         run: npm run compile
 
       - name: Build Chrome
@@ -33,18 +33,18 @@ jobs:
       - name: Build Firefox
         run: npm run build:firefox
 
-      - name: Générer les archives
+      - name: Generate archives
         run: |
           npm run zip
           npm run zip:firefox
 
-      - name: Publier les archives comme artefacts
+      - name: Upload archives as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: faceit-plus-${{ github.sha }}
           path: .output/*.zip
-          # .output commence par un point : sans cette option, l'action ignore
-          # les fichiers considérés comme cachés et n'envoie rien.
+          # .output starts with a dot: without this option, the action ignores
+          # files it considers hidden and uploads nothing.
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
